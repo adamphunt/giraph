@@ -30,7 +30,7 @@ import org.apache.hadoop.mapreduce.InputSplit;
 import org.apache.hadoop.mapreduce.JobContext;
 import org.apache.hadoop.mapreduce.RecordReader;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
-import org.apache.hcatalog.data.HCatRecord;
+import org.apache.hive.hcatalog.data.HCatRecord;
 import org.apache.log4j.Logger;
 
 import com.google.common.collect.Lists;
@@ -47,7 +47,7 @@ import java.util.List;
  * <p>
  * The desired database and table name to load from can be specified via
  * {@link GiraphHCatInputFormat#setVertexInput(org.apache.hadoop.mapreduce.Job,
- * org.apache.hcatalog.mapreduce.InputJobInfo)}
+ * org.apache.hive.hcatalog.mapreduce.InputJobInfo)}
  * as you setup your vertex input format with {@link
  * org.apache.giraph.conf.GiraphConfiguration#setVertexInputFormatClass(Class)
  * }.

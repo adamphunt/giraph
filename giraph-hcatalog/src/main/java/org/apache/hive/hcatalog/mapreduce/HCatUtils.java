@@ -16,7 +16,7 @@
  * limitations under the License.
  */
 
-package org.apache.hcatalog.mapreduce;
+package org.apache.hive.hcatalog.mapreduce;
 
 import org.apache.giraph.io.hcatalog.GiraphHCatInputFormat;
 import org.apache.hadoop.conf.Configuration;
@@ -27,13 +27,14 @@ import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
 import org.apache.hadoop.hive.metastore.api.Partition;
 import org.apache.hadoop.hive.metastore.api.StorageDescriptor;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
+import org.apache.hadoop.hive.ql.metadata.HiveStorageHandler;
 import org.apache.hadoop.hive.ql.metadata.Table;
 import org.apache.hadoop.mapreduce.InputSplit;
 import org.apache.hadoop.mapreduce.RecordReader;
-import org.apache.hcatalog.common.ErrorType;
-import org.apache.hcatalog.common.HCatException;
-import org.apache.hcatalog.common.HCatUtil;
-import org.apache.hcatalog.data.schema.HCatSchema;
+import org.apache.hive.hcatalog.common.ErrorType;
+import org.apache.hive.hcatalog.common.HCatException;
+import org.apache.hive.hcatalog.common.HCatUtil;
+import org.apache.hive.hcatalog.data.schema.HCatSchema;
 import org.apache.thrift.TException;
 
 import java.io.IOException;
@@ -147,7 +148,7 @@ public class HCatUtils {
     StorerInfo storerInfo = InternalUtil.extractStorerInfo(sd, parameters);
 
     Properties hcatProperties = new Properties();
-    HCatStorageHandler storageHandler = HCatUtil.getStorageHandler(conf,
+    HiveStorageHandler storageHandler = HCatUtil.getStorageHandler(conf,
         storerInfo);
 
     // Copy the properties from storageHandler to jobProperties
@@ -170,8 +171,8 @@ public class HCatUtils {
    * @return Record reader
    */
   public static RecordReader newHCatReader(
-      HCatStorageHandler storageHandler,
-      Map<String, String> valuesNotInDataCols) {
+          HiveStorageHandler storageHandler,
+      Map<String, Object> valuesNotInDataCols) {
     return new HCatRecordReader(storageHandler, valuesNotInDataCols);
   }
 

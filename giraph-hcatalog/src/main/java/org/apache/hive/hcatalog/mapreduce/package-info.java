@@ -18,4 +18,4 @@
 /**
  * Package for HCatalog helper utilities.
  */
-package org.apache.hcatalog.mapreduce;
+package org.apache.hive.hcatalog.mapreduce;

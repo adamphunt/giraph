@@ -33,9 +33,9 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.util.Tool;
 import org.apache.hadoop.util.ToolRunner;
-import org.apache.hcatalog.mapreduce.HCatOutputFormat;
-import org.apache.hcatalog.mapreduce.InputJobInfo;
-import org.apache.hcatalog.mapreduce.OutputJobInfo;
+import org.apache.hive.hcatalog.mapreduce.HCatOutputFormat;
+import org.apache.hive.hcatalog.mapreduce.InputJobInfo;
+import org.apache.hive.hcatalog.mapreduce.OutputJobInfo;
 import org.apache.log4j.Logger;
 
 import com.google.common.collect.Lists;
@@ -164,14 +164,14 @@ public class HCatGiraphRunner implements Tool {
     // setup input from Hive
     if (vertexInputFormatClass != null) {
       InputJobInfo vertexInputJobInfo = InputJobInfo.create(dbName,
-          vertexInputTableName, vertexInputTableFilterExpr);
+          vertexInputTableName, vertexInputTableFilterExpr, null);
       GiraphHCatInputFormat.setVertexInput(job.getInternalJob(),
           vertexInputJobInfo);
       job.getConfiguration().setVertexInputFormatClass(vertexInputFormatClass);
     }
     if (edgeInputFormatClass != null) {
       InputJobInfo edgeInputJobInfo = InputJobInfo.create(dbName,
-          edgeInputTableName, edgeInputTableFilterExpr);
+          edgeInputTableName, edgeInputTableFilterExpr, null);
       GiraphHCatInputFormat.setEdgeInput(job.getInternalJob(),
           edgeInputJobInfo);
       job.getConfiguration().setEdgeInputFormatClass(edgeInputFormatClass);
@@ -181,7 +181,8 @@ public class HCatGiraphRunner implements Tool {
     HCatOutputFormat.setOutput(job.getInternalJob(), OutputJobInfo.create(
         dbName, outputTableName, outputTablePartitionValues));
     HCatOutputFormat.setSchema(job.getInternalJob(),
-        HCatOutputFormat.getTableSchema(job.getInternalJob()));
+        HCatOutputFormat.getTableSchema(
+                job.getInternalJob().getConfiguration()));
     if (skipOutput) {
       LOG.warn("run: Warning - Output will be skipped!");
     } else {

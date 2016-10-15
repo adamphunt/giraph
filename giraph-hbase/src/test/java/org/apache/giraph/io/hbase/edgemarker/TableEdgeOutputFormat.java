@@ -20,6 +20,7 @@ package org.apache.giraph.io.hbase.edgemarker;
 import org.apache.giraph.io.hbase.HBaseVertexOutputFormat;
 import org.apache.giraph.graph.Vertex;
 import org.apache.giraph.io.VertexWriter;
+import org.apache.hadoop.hbase.client.Mutation;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
 import org.apache.hadoop.hbase.util.Bytes;
@@ -62,12 +63,12 @@ public class TableEdgeOutputFormat
         public void writeVertex(
                 Vertex<Text, Text, Text> vertex)
                 throws IOException, InterruptedException {
-              RecordWriter<ImmutableBytesWritable, Writable> writer = getRecordWriter();
+              RecordWriter<ImmutableBytesWritable, Mutation> writer = getRecordWriter();
               byte[] rowBytes = vertex.getId().getBytes();
               Put put = new Put(rowBytes);
               Text value = vertex.getValue();
               if (value.toString().length() > 0)   {
-                 put.add(CF, PARENT, value.getBytes());
+                 put.addColumn(CF, PARENT, value.getBytes());
                  writer.write(new ImmutableBytesWritable(rowBytes), put);
               }
         }

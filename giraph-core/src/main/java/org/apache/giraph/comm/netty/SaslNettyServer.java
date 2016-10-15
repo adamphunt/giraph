@@ -48,7 +48,6 @@ import javax.security.sasl.SaslException;
 import javax.security.sasl.SaslServer;
 import java.io.IOException;
 import java.nio.charset.Charset;
-import org.apache.hadoop.security.SaslRpcServer.AuthMethod;
 
 /**
  * Encapsulates SASL server logic for Giraph BSP worker servers.

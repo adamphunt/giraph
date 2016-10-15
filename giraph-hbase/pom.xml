@@ -170,7 +170,7 @@ under the License.
     </dependency>
     <dependency>
       <groupId>org.apache.hbase</groupId>
-      <artifactId>hbase</artifactId>
+      <artifactId>hbase-server</artifactId>
     </dependency>
 
     <!-- runtime dependency -->
@@ -193,7 +193,7 @@ under the License.
     </dependency>
     <dependency>
       <groupId>org.apache.hbase</groupId>
-      <artifactId>hbase</artifactId>
+      <artifactId>hbase-testing-util</artifactId>
       <type>test-jar</type>
       <scope>test</scope>
     </dependency>

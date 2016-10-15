@@ -21,6 +21,7 @@ package org.apache.giraph.io.hcatalog;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hive.ql.metadata.HiveStorageHandler;
 import org.apache.hadoop.io.WritableComparable;
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapreduce.InputSplit;
@@ -29,17 +30,16 @@ import org.apache.hadoop.mapreduce.JobContext;
 import org.apache.hadoop.mapreduce.RecordReader;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
 import org.apache.hadoop.util.StringUtils;
-import org.apache.hcatalog.common.HCatConstants;
-import org.apache.hcatalog.common.HCatUtil;
-import org.apache.hcatalog.data.HCatRecord;
-import org.apache.hcatalog.data.schema.HCatFieldSchema;
-import org.apache.hcatalog.data.schema.HCatSchema;
-import org.apache.hcatalog.mapreduce.HCatBaseInputFormat;
-import org.apache.hcatalog.mapreduce.HCatSplit;
-import org.apache.hcatalog.mapreduce.HCatStorageHandler;
-import org.apache.hcatalog.mapreduce.HCatUtils;
-import org.apache.hcatalog.mapreduce.InputJobInfo;
-import org.apache.hcatalog.mapreduce.PartInfo;
+import org.apache.hive.hcatalog.common.HCatConstants;
+import org.apache.hive.hcatalog.common.HCatUtil;
+import org.apache.hive.hcatalog.data.HCatRecord;
+import org.apache.hive.hcatalog.data.schema.HCatFieldSchema;
+import org.apache.hive.hcatalog.data.schema.HCatSchema;
+import org.apache.hive.hcatalog.mapreduce.HCatBaseInputFormat;
+import org.apache.hive.hcatalog.mapreduce.HCatSplit;
+import org.apache.hive.hcatalog.mapreduce.HCatUtils;
+import org.apache.hive.hcatalog.mapreduce.InputJobInfo;
+import org.apache.hive.hcatalog.mapreduce.PartInfo;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -50,7 +50,7 @@ import java.util.Map;
 
 /**
  * Provides functionality similar to
- * {@link org.apache.hcatalog.mapreduce.HCatInputFormat},
+ * {@link org.apache.hive.hcatalog.mapreduce.HCatInputFormat},
  * but allows for different data sources (vertex and edge data).
  */
 public class GiraphHCatInputFormat extends HCatBaseInputFormat {
@@ -74,7 +74,7 @@ public class GiraphHCatInputFormat extends HCatBaseInputFormat {
     InputJobInfo vertexInputJobInfo = InputJobInfo.create(
         inputJobInfo.getDatabaseName(),
         inputJobInfo.getTableName(),
-        inputJobInfo.getFilter());
+        inputJobInfo.getFilter(), null);
     vertexInputJobInfo.getProperties().putAll(inputJobInfo.getProperties());
     Configuration conf = job.getConfiguration();
     conf.set(VERTEX_INPUT_JOB_INFO, HCatUtil.serialize(
@@ -94,7 +94,7 @@ public class GiraphHCatInputFormat extends HCatBaseInputFormat {
     InputJobInfo edgeInputJobInfo = InputJobInfo.create(
         inputJobInfo.getDatabaseName(),
         inputJobInfo.getTableName(),
-        inputJobInfo.getFilter());
+        inputJobInfo.getFilter(), null);
     edgeInputJobInfo.getProperties().putAll(inputJobInfo.getProperties());
     Configuration conf = job.getConfiguration();
     conf.set(EDGE_INPUT_JOB_INFO, HCatUtil.serialize(
@@ -223,7 +223,7 @@ public class GiraphHCatInputFormat extends HCatBaseInputFormat {
       return splits;
     }
 
-    HCatStorageHandler storageHandler;
+    HiveStorageHandler storageHandler;
     JobConf jobConf;
     //For each matching partition, call getSplits on the underlying InputFormat
     for (PartInfo partitionInfo : partitionInfoList) {
@@ -264,7 +264,8 @@ public class GiraphHCatInputFormat extends HCatBaseInputFormat {
           inputFormat.getSplits(jobConf, desiredNumSplits);
 
       for (org.apache.hadoop.mapred.InputSplit split : baseSplits) {
-        splits.add(new HCatSplit(partitionInfo, split, allCols));
+        //splits.add(new HCatSplit(partitionInfo, split, allCols));
+        splits.add(new HCatSplit(partitionInfo, split));
       }
     }
 
@@ -334,7 +335,7 @@ public class GiraphHCatInputFormat extends HCatBaseInputFormat {
   }
 
   /**
-   * Create an {@link org.apache.hcatalog.mapreduce.HCatRecordReader}.
+   * Create an {@link org.apache.hive.hcatalog.mapreduce.HCatRecordReader}.
    *
    * @param split Input split
    * @param schema Table schema
@@ -353,14 +354,14 @@ public class GiraphHCatInputFormat extends HCatBaseInputFormat {
     JobContext jobContext = taskContext;
     Configuration conf = jobContext.getConfiguration();
 
-    HCatStorageHandler storageHandler = HCatUtil.getStorageHandler(
+    HiveStorageHandler storageHandler = HCatUtil.getStorageHandler(
         conf, partitionInfo);
 
     JobConf jobConf = HCatUtil.getJobConfFromContext(jobContext);
     Map<String, String> jobProperties = partitionInfo.getJobProperties();
     HCatUtil.copyJobPropertiesToJobConf(jobProperties, jobConf);
 
-    Map<String, String> valuesNotInDataCols = getColValsNotInDataColumns(
+    Map<String, Object> valuesNotInDataCols = getColValsNotInDataColumns(
         schema, partitionInfo);
 
     return HCatUtils.newHCatReader(storageHandler, valuesNotInDataCols);
@@ -406,11 +407,11 @@ public class GiraphHCatInputFormat extends HCatBaseInputFormat {
    * @param partInfo Partition info
    * @return Values not in data columns
    */
-  private static Map<String, String> getColValsNotInDataColumns(
+  private static Map<String, Object> getColValsNotInDataColumns(
       HCatSchema outputSchema,
       PartInfo partInfo) {
     HCatSchema dataSchema = partInfo.getPartitionSchema();
-    Map<String, String> vals = new HashMap<String, String>();
+    Map<String, Object> vals = new HashMap<>();
     for (String fieldName : outputSchema.getFieldNames()) {
       if (dataSchema.getPosition(fieldName) == null) {
         // this entry of output is not present in the output schema

@@ -303,7 +303,7 @@ under the License.
     <dep.google.findbugs.version>2.0.2</dep.google.findbugs.version>
     <dep.guava.version>14.0.1</dep.guava.version>
     <dep.hbase.version>1.1.1-mapr-1602</dep.hbase.version>
-    <dep.hcatalog.version>0.5.0-incubating</dep.hcatalog.version>
+    <dep.hcatalog.version>1.2.0-mapr-1609</dep.hcatalog.version>
     <dep.hive.version>1.2.0-mapr-1609</dep.hive.version>
     <dep.hiveio.version>0.26</dep.hiveio.version>
     <dep.jaxb-impl.version>2.2.4-1</dep.jaxb-impl.version>
@@ -1770,8 +1770,8 @@ under the License.
         </exclusions>
       </dependency>
       <dependency>
-        <groupId>org.apache.hcatalog</groupId>
-        <artifactId>hcatalog-core</artifactId>
+        <groupId>org.apache.hive.hcatalog</groupId>
+        <artifactId>hive-hcatalog-core</artifactId>
         <version>${dep.hcatalog.version}</version>
         <exclusions>
           <exclusion>
@@ -2039,7 +2039,7 @@ under the License.
       </dependency>
       <dependency>
         <groupId>org.apache.hbase</groupId>
-        <artifactId>hbase</artifactId>
+        <artifactId>hbase-server</artifactId>
         <version>${dep.hbase.version}</version>
         <scope>provided</scope>
         <exclusions>
@@ -2191,7 +2191,7 @@ under the License.
       </dependency>
       <dependency>
         <groupId>org.apache.hbase</groupId>
-        <artifactId>hbase</artifactId>
+        <artifactId>hbase-testing-util</artifactId>
         <type>test-jar</type>
         <version>${dep.hbase.version}</version>
         <scope>test</scope>
