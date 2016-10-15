@@ -31,6 +31,7 @@ import org.apache.hadoop.mapreduce.security.token.JobTokenIdentifier;
 import org.apache.hadoop.mapreduce.security.token.JobTokenSecretManager;
 import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.security.rpcauth.RpcAuthRegistry;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.TokenIdentifier;
 import org.apache.hadoop.util.ReflectionUtils;
@@ -112,7 +113,7 @@ public class SaslServerHandler extends
         }
         try {
           saslNettyServer = new SaslNettyServer(secretManager,
-            AuthMethod.SIMPLE);
+            RpcAuthRegistry.SIMPLE);
         } catch (IOException ioe) { //TODO:
           throw new RuntimeException(ioe);
         }

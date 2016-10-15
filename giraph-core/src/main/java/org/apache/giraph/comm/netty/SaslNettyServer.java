@@ -32,6 +32,8 @@ import org.apache.hadoop.mapreduce.security.token.JobTokenSecretManager;
 import org.apache.hadoop.security.SaslPropertiesResolver;
 /*end[STATIC_SASL_SYMBOL]*/
 import org.apache.hadoop.security.SaslRpcServer;
+import org.apache.hadoop.security.rpcauth.RpcAuthMethod;
+import org.apache.hadoop.security.rpcauth.RpcAuthRegistry;
 import org.apache.log4j.Logger;
 
 import javax.security.auth.callback.Callback;
@@ -68,7 +70,7 @@ public class SaslNettyServer extends SaslRpcServer {
    */
   public SaslNettyServer(JobTokenSecretManager secretManager)
     throws IOException {
-    this(secretManager, AuthMethod.SIMPLE);
+    this(secretManager, RpcAuthRegistry.SIMPLE);
   }
 
   /**
@@ -78,10 +80,11 @@ public class SaslNettyServer extends SaslRpcServer {
    * @param authMethod Authentication method
    */
   public SaslNettyServer(JobTokenSecretManager secretManager,
-    AuthMethod authMethod) throws IOException {
+    RpcAuthMethod authMethod) throws IOException {
+    super(authMethod);
 /*if[HADOOP_1_SECRET_MANAGER]
 else[HADOOP_1_SECRET_MANAGER]*/
-    super(authMethod);
+    //super(authMethod);
 /*end[HADOOP_1_SECRET_MANAGER]*/
     if (LOG.isDebugEnabled()) {
       LOG.debug("SaslNettyServer: Secret manager is: " + secretManager +

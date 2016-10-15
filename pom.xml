@@ -258,6 +258,12 @@ under the License.
         <enabled>true</enabled>
       </releases>
     </repository>
+    <repository>
+      <id>mapr-releases</id>
+      <url>http://repository.mapr.com/maven/</url>
+      <snapshots><enabled>false</enabled></snapshots>
+      <releases><enabled>true</enabled></releases>
+    </repository>
   </repositories>
 
   <properties>
@@ -296,9 +302,9 @@ under the License.
     <dep.fastutil.version>6.5.4</dep.fastutil.version>
     <dep.google.findbugs.version>2.0.2</dep.google.findbugs.version>
     <dep.guava.version>14.0.1</dep.guava.version>
-    <dep.hbase.version>0.94.16</dep.hbase.version>
+    <dep.hbase.version>1.1.1-mapr-1602</dep.hbase.version>
     <dep.hcatalog.version>0.5.0-incubating</dep.hcatalog.version>
-    <dep.hive.version>0.11.0</dep.hive.version>
+    <dep.hive.version>1.2.0-mapr-1609</dep.hive.version>
     <dep.hiveio.version>0.26</dep.hiveio.version>
     <dep.jaxb-impl.version>2.2.4-1</dep.jaxb-impl.version>
     <dep.jersey.version>1.17</dep.jersey.version>
@@ -1300,7 +1306,7 @@ under the License.
         <module>giraph-dist</module>
       </modules>
        <properties>
-         <hadoop.version>2.5.1</hadoop.version>
+         <hadoop.version>2.7.0-mapr-1607</hadoop.version>
          <!-- TODO: add these checks eventually -->
          <project.enforcer.skip>true</project.enforcer.skip>
          <giraph.maven.dependency.plugin.skip>true</giraph.maven.dependency.plugin.skip>
