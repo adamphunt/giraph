@@ -146,8 +146,10 @@ public class MetaPartitionManager {
     perThreadMessageBuffers = new ArrayList<>(numIOThreads);
     for (int i = 0; i < numIOThreads; ++i) {
       perThreadPartitionDictionary.add(new MetaPartitionDictionary());
-      perThreadMessageBuffers.add(Sets.newSetFromMap(new ConcurrentHashMap<Integer, Boolean>()));
-      perThreadVertexEdgeBuffers.add(Sets.newSetFromMap(new ConcurrentHashMap<Integer, Boolean>()));
+      perThreadMessageBuffers.add(Sets.newSetFromMap(
+              new ConcurrentHashMap<Integer, Boolean>()));
+      perThreadVertexEdgeBuffers.add(Sets.newSetFromMap(
+              new ConcurrentHashMap<Integer, Boolean>()));
     }
     this.oocEngine = oocEngine;
     this.randomGenerator = new Random();
