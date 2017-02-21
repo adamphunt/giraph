@@ -324,29 +324,28 @@ under the License.
     <dep.airline.version>0.5</dep.airline.version>
     <dep.base64.version>2.3.8</dep.base64.version>
     <dep.cli-parser.version>1.1</dep.cli-parser.version>
-    <dep.codehaus-jackson.version>1.9.2</dep.codehaus-jackson.version>
+    <dep.codehaus-jackson.version>1.9.13</dep.codehaus-jackson.version>
     <dep.commons-codec.version>1.8</dep.commons-codec.version>
     <dep.commons-cli.version>1.2</dep.commons-cli.version>
-    <dep.commons-collections.version>3.2.1</dep.commons-collections.version>
+    <dep.commons-collections.version>3.2.2</dep.commons-collections.version>
     <dep.commons-configuration.version>1.6</dep.commons-configuration.version>
-    <dep.commons-httpclient.version>3.0.1</dep.commons-httpclient.version>
+    <dep.commons-httpclient.version>3.1</dep.commons-httpclient.version>
     <dep.commons-logging.version>1.1.1</dep.commons-logging.version>
     <dep.commons-io.version>2.4</dep.commons-io.version>
     <dep.commons-net.version>3.1</dep.commons-net.version>
-    <dep.commons-lang3.version>3.4</dep.commons-lang3.version>
+    <dep.commons-lang3.version>3.3.2</dep.commons-lang3.version>
     <dep.facebook-swift.version>0.14.0</dep.facebook-swift.version>
-    <dep.fasterxml-jackson.version>2.1.2</dep.fasterxml-jackson.version>
+    <dep.fasterxml-jackson.version>2.2.3</dep.fasterxml-jackson.version>
     <dep.fastutil.version>6.5.4</dep.fastutil.version>
     <dep.google.findbugs.version>2.0.2</dep.google.findbugs.version>
     <dep.guava.version>14.0.1</dep.guava.version>
     <dep.hbase.version>1.1.1-mapr-1602</dep.hbase.version>
     <dep.hcatalog.version>1.2.0-mapr-1609</dep.hcatalog.version>
     <dep.hive.version>1.2.0-mapr-1609</dep.hive.version>
-    <dep.hiveio.version>0.26</dep.hiveio.version>
     <dep.jaxb-impl.version>2.2.4-1</dep.jaxb-impl.version>
     <dep.jersey.version>1.17</dep.jersey.version>
     <dep.jetty.version>6.1.26</dep.jetty.version>
-    <dep.json.version>20090211</dep.json.version>
+    <dep.json.version>20080701</dep.json.version>
     <dep.junit.version>4.11</dep.junit.version>
     <dep.jython.version>2.5.3</dep.jython.version>
     <dep.kryo.version>3.0.1</dep.kryo.version>
@@ -364,7 +363,7 @@ under the License.
     <dep.typetools.version>0.2.1</dep.typetools.version>
     <dep.yammer-metrics.version>2.2.0</dep.yammer-metrics.version>
     <dep.yourkit-api.version>11.0.10</dep.yourkit-api.version>
-    <dep.zookeeper.version>3.4.5</dep.zookeeper.version>
+    <dep.zookeeper.version>3.4.5-mapr-1503</dep.zookeeper.version>
 
     <forHadoop>for-hadoop-${hadoop.version}</forHadoop>
     <munge.symbols>NO_MUNGE_SYMBOLS</munge.symbols>
@@ -1470,58 +1469,6 @@ under the License.
         <version>${dep.asm.version}</version>
       </dependency>
       <dependency>
-        <groupId>com.facebook.hiveio</groupId>
-        <artifactId>hive-io-exp-core</artifactId>
-        <version>${dep.hiveio.version}</version>
-        <exclusions>
-          <exclusion>
-            <groupId>commons-beanutils</groupId>
-            <artifactId>commons-beanutils-core</artifactId>
-          </exclusion>
-          <exclusion>
-            <groupId>io.airlift</groupId>
-            <artifactId>units</artifactId>
-          </exclusion>
-          <exclusion>
-            <groupId>javax.validation</groupId>
-            <artifactId>validation-api</artifactId>
-          </exclusion>
-          <!-- ReflectASM changed groupId, Kryo in giraph-core is using new version -->
-          <exclusion>
-            <groupId>com.esotericsoftware.reflectasm</groupId>
-            <artifactId>reflectasm</artifactId>
-          </exclusion>
-        </exclusions>
-      </dependency>
-      <dependency>
-        <groupId>com.facebook.hiveio</groupId>
-        <artifactId>hive-io-exp-testing</artifactId>
-        <version>${dep.hiveio.version}</version>
-        <exclusions>
-          <exclusion>
-            <groupId>commons-logging</groupId>
-            <artifactId>commons-logging</artifactId>
-          </exclusion>
-          <exclusion>
-            <groupId>org.apache.zookeeper</groupId>
-            <artifactId>zookeeper</artifactId>
-          </exclusion>
-          <exclusion>
-            <groupId>io.airlift</groupId>
-            <artifactId>units</artifactId>
-          </exclusion>
-          <exclusion>
-            <groupId>javax.validation</groupId>
-            <artifactId>validation-api</artifactId>
-          </exclusion>
-          <!-- ReflectASM changed groupId, Kryo in giraph-core is using new version -->
-          <exclusion>
-            <groupId>com.esotericsoftware.reflectasm</groupId>
-            <artifactId>reflectasm</artifactId>
-          </exclusion>
-        </exclusions>
-      </dependency>
-      <dependency>
         <groupId>com.google.guava</groupId>
         <artifactId>guava</artifactId>
         <version>${dep.guava.version}</version>
@@ -2193,31 +2140,6 @@ under the License.
           <exclusion>
             <groupId>org.apache.hadoop</groupId>
             <artifactId>hadoop-core</artifactId>
-          </exclusion>
-        </exclusions>
-      </dependency>
-      <dependency>
-        <groupId>com.facebook.hiveio</groupId>
-        <artifactId>hive-io-exp-core</artifactId>
-        <version>${dep.hiveio.version}</version>
-        <type>test-jar</type>
-        <exclusions>
-          <exclusion>
-            <groupId>commons-beanutils</groupId>
-            <artifactId>commons-beanutils-core</artifactId>
-          </exclusion>
-          <exclusion>
-            <groupId>io.airlift</groupId>
-            <artifactId>units</artifactId>
-          </exclusion>
-          <exclusion>
-            <groupId>javax.validation</groupId>
-            <artifactId>validation-api</artifactId>
-          </exclusion>
-          <!-- ReflectASM changed groupId, Kryo in giraph-core is using new version -->
-          <exclusion>
-            <groupId>com.esotericsoftware.reflectasm</groupId>
-            <artifactId>reflectasm</artifactId>
           </exclusion>
         </exclusions>
       </dependency>
