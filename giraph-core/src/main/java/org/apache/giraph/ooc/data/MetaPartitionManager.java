@@ -32,6 +32,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Random;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -145,8 +146,8 @@ public class MetaPartitionManager {
     perThreadMessageBuffers = new ArrayList<>(numIOThreads);
     for (int i = 0; i < numIOThreads; ++i) {
       perThreadPartitionDictionary.add(new MetaPartitionDictionary());
-      perThreadMessageBuffers.add(Sets.<Integer>newConcurrentHashSet());
-      perThreadVertexEdgeBuffers.add(Sets.<Integer>newConcurrentHashSet());
+      perThreadMessageBuffers.add(Sets.newSetFromMap(new ConcurrentHashMap<Integer, Boolean>()));
+      perThreadVertexEdgeBuffers.add(Sets.newSetFromMap(new ConcurrentHashMap<Integer, Boolean>()));
     }
     this.oocEngine = oocEngine;
     this.randomGenerator = new Random();

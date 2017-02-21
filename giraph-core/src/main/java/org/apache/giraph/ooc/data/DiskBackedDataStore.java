@@ -38,6 +38,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -102,12 +103,12 @@ public abstract class DiskBackedDataStore<T> {
    * separate.
    */
   protected final Set<Integer> hasPartitionDataOnFile =
-      Sets.newConcurrentHashSet();
+      Sets.newSetFromMap(new ConcurrentHashMap<Integer, Boolean>());
   /** Cached value for MINIMUM_BUFFER_SIZE_TO_FLUSH */
   private final int minBufferSizeToOffload;
   /** Set containing ids of all out-of-core partitions */
   private final Set<Integer> hasPartitionDataOnDisk =
-      Sets.newConcurrentHashSet();
+      Sets.newSetFromMap(new ConcurrentHashMap<Integer, Boolean>());
   /**
    * Map of partition ids to list of raw data buffers. The map will have entries
    * only for partitions that their in-memory data structures are currently
