@@ -33,7 +33,6 @@ import java.util.List;
 import org.apache.giraph.bsp.CentralizedServiceWorker;
 import org.apache.giraph.combiner.MessageCombiner;
 import org.apache.giraph.comm.messages.MessageStore;
-import org.apache.giraph.partition.Partition;
 import org.apache.giraph.utils.EmptyIterable;
 import org.apache.giraph.utils.VertexIdMessageIterator;
 import org.apache.giraph.utils.VertexIdMessages;
@@ -74,12 +73,10 @@ public class LongDoubleMessageStore
 
     map = new Int2ObjectOpenHashMap<Long2DoubleOpenHashMap>();
     for (int partitionId : service.getPartitionStore().getPartitionIds()) {
-      Partition<LongWritable, Writable, Writable> partition =
-          service.getPartitionStore().getOrCreatePartition(partitionId);
-      Long2DoubleOpenHashMap partitionMap =
-          new Long2DoubleOpenHashMap((int) partition.getVertexCount());
+      Long2DoubleOpenHashMap partitionMap = new Long2DoubleOpenHashMap(
+          (int) service.getPartitionStore()
+              .getPartitionVertexCount(partitionId));
       map.put(partitionId, partitionMap);
-      service.getPartitionStore().putPartition(partition);
     }
   }
 
@@ -100,8 +97,7 @@ public class LongDoubleMessageStore
 
   @Override
   public void addPartitionMessages(int partitionId,
-      VertexIdMessages<LongWritable, DoubleWritable> messages) throws
-      IOException {
+      VertexIdMessages<LongWritable, DoubleWritable> messages) {
     LongWritable reusableVertexId = new LongWritable();
     DoubleWritable reusableMessage = new DoubleWritable();
     DoubleWritable reusableCurrentMessage = new DoubleWritable();
@@ -132,7 +128,7 @@ public class LongDoubleMessageStore
   }
 
   @Override
-  public void clearPartition(int partitionId) throws IOException {
+  public void clearPartition(int partitionId) {
     map.get(partitionId).clear();
   }
 
@@ -142,8 +138,14 @@ public class LongDoubleMessageStore
   }
 
   @Override
+  public boolean hasMessagesForPartition(int partitionId) {
+    Long2DoubleOpenHashMap partitionMessages = map.get(partitionId);
+    return partitionMessages != null && !partitionMessages.isEmpty();
+  }
+
+  @Override
   public Iterable<DoubleWritable> getVertexMessages(
-      LongWritable vertexId) throws IOException {
+      LongWritable vertexId) {
     Long2DoubleOpenHashMap partitionMap = getPartitionMap(vertexId);
     if (!partitionMap.containsKey(vertexId.get())) {
       return EmptyIterable.get();
@@ -154,12 +156,12 @@ public class LongDoubleMessageStore
   }
 
   @Override
-  public void clearVertexMessages(LongWritable vertexId) throws IOException {
+  public void clearVertexMessages(LongWritable vertexId) {
     getPartitionMap(vertexId).remove(vertexId.get());
   }
 
   @Override
-  public void clearAll() throws IOException {
+  public void clearAll() {
     map.clear();
   }
 

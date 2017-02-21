@@ -19,18 +19,26 @@
 package org.apache.giraph.graph;
 
 import org.apache.giraph.conf.GiraphConfiguration;
+import org.apache.giraph.job.ClientThriftServer;
 import org.apache.giraph.job.JobProgressTracker;
 import org.apache.giraph.worker.WorkerProgress;
 import org.apache.log4j.Logger;
 
 import com.facebook.nifty.client.FramedClientConnector;
+import com.facebook.nifty.client.NettyClientConfigBuilder;
+import com.facebook.nifty.client.NiftyClient;
+import com.facebook.swift.codec.ThriftCodec;
+import com.facebook.swift.codec.ThriftCodecManager;
 import com.facebook.swift.service.RuntimeTTransportException;
+import com.facebook.swift.service.ThriftClientEventHandler;
 import com.facebook.swift.service.ThriftClientManager;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.io.Closeables;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.RejectedExecutionException;
 
 /**
  * Wrapper around JobProgressTracker which retires to connect and swallows
@@ -65,11 +73,15 @@ public class RetryableJobProgressTrackerClient
    */
   private void resetConnection() throws ExecutionException,
       InterruptedException {
-    clientManager = new ThriftClientManager();
+    clientManager = new ThriftClientManager(
+        new ThriftCodecManager(new ThriftCodec[0]),
+        new NiftyClient(
+            new NettyClientConfigBuilder().setWorkerThreadCount(2).build()),
+        ImmutableSet.<ThriftClientEventHandler>of());
     FramedClientConnector connector =
         new FramedClientConnector(new InetSocketAddress(
-            JOB_PROGRESS_SERVICE_HOST.get(conf),
-            JOB_PROGRESS_SERVICE_PORT.get(conf)));
+            ClientThriftServer.CLIENT_THRIFT_SERVER_HOST.get(conf),
+            ClientThriftServer.CLIENT_THRIFT_SERVER_PORT.get(conf)));
     jobProgressTracker =
         clientManager.createClient(connector, JobProgressTracker.class).get();
 
@@ -111,6 +123,16 @@ public class RetryableJobProgressTrackerClient
   }
 
   @Override
+  public synchronized void logError(final String logLine) {
+    executeWithRetry(new Runnable() {
+      @Override
+      public void run() {
+        jobProgressTracker.logError(logLine);
+      }
+    });
+  }
+
+  @Override
   public synchronized void logFailure(final String reason) {
     executeWithRetry(new Runnable() {
       @Override
@@ -138,9 +160,9 @@ public class RetryableJobProgressTrackerClient
   private void executeWithRetry(Runnable runnable) {
     try {
       runnable.run();
-    } catch (RuntimeTTransportException te) {
+    } catch (RuntimeTTransportException | RejectedExecutionException te) {
       if (LOG.isDebugEnabled()) {
-        LOG.debug("RuntimeTTransportException occurred while talking to " +
+        LOG.debug(te.getClass() + " occurred while talking to " +
             "JobProgressTracker server, trying to reconnect", te);
       }
       try {
@@ -150,7 +172,8 @@ public class RetryableJobProgressTrackerClient
         } catch (Exception e) {
           // CHECKSTYLE: resume IllegalCatch
           if (LOG.isDebugEnabled()) {
-            LOG.debug("");
+            LOG.debug(
+                "Exception occurred while trying to close client manager", e);
           }
         }
         resetConnection();

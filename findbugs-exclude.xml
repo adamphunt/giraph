@@ -69,11 +69,7 @@
     <Bug pattern="JLM_JSR166_UTILCONCURRENT_MONITORENTER"/>
   </Match>
   <Match>
-    <Class name="org.apache.giraph.comm.netty.handler.RequestServerHandler"/>
-    <Bug pattern="JLM_JSR166_UTILCONCURRENT_MONITORENTER"/>
-  </Match>
-  <Match>
-    <Class name="org.apache.giraph.comm.netty.handler.ResponseClientHandler"/>
+    <Class name="org.apache.giraph.comm.flow_control.CreditBasedFlowControl"/>
     <Bug pattern="JLM_JSR166_UTILCONCURRENT_MONITORENTER"/>
   </Match>
   <Match>
@@ -89,11 +85,12 @@
     <Bug pattern="SE_COMPARATOR_SHOULD_BE_SERIALIZABLE"/>
   </Match>
   <Match>
-    <Class name="org.apache.giraph.partition.DiskBackedPartitionStore$AddPartition"/>
-    <Bug pattern="UL_UNRELEASED_LOCK"/>
+    <Class name="~org.apache.giraph.function.primitive.PrimitiveRefs.*Ref"/>
+    <Bug pattern="URF_UNREAD_PUBLIC_OR_PROTECTED_FIELD"/>
   </Match>
   <Match>
-    <Class name="org.apache.giraph.partition.DiskBackedPartitionStore$GetPartition"/>
-    <Bug pattern="UL_UNRELEASED_LOCK"/>
+    <!-- Java Serialization is not used, so this is never an actual issue.
+      On the other hand, Kryo needs lambdas to be Serializable to work. -->
+    <Bug pattern="SE_BAD_FIELD,SE_COMPARATOR_SHOULD_BE_SERIALIZABLE,SE_NO_SERIALVERSIONID" />
   </Match>
 </FindBugsFilter>

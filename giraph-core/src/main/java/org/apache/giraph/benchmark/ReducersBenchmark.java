@@ -31,7 +31,7 @@ import org.apache.giraph.graph.Vertex;
 import org.apache.giraph.io.formats.PseudoRandomInputFormatConstants;
 import org.apache.giraph.io.formats.PseudoRandomVertexInputFormat;
 import org.apache.giraph.master.DefaultMasterCompute;
-import org.apache.giraph.reducers.OnSameReduceOperation;
+import org.apache.giraph.reducers.ReduceSameTypeOperation;
 import org.apache.giraph.worker.DefaultWorkerContext;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.DoubleWritable;
@@ -54,7 +54,7 @@ public class ReducersBenchmark extends GiraphBenchmark {
 
   /** LongSumReducer */
   public static class TestLongSumReducer
-      extends OnSameReduceOperation<LongWritable> {
+      extends ReduceSameTypeOperation<LongWritable> {
     /** Singleton */
     public static final TestLongSumReducer INSTANCE = new TestLongSumReducer();
 
@@ -64,7 +64,7 @@ public class ReducersBenchmark extends GiraphBenchmark {
     }
 
     @Override
-    public LongWritable reduceSingle(
+    public LongWritable reduce(
         LongWritable curValue, LongWritable valueToReduce) {
       curValue.set(curValue.get() + valueToReduce.get());
       return curValue;
@@ -126,15 +126,15 @@ public class ReducersBenchmark extends GiraphBenchmark {
         String mi = "m" + i;
         String pi = "p" + i;
 
-        registerReduce(wi, TestLongSumReducer.INSTANCE);
-        registerReduce(mi, new TestLongSumReducer());
+        registerReducer(wi, TestLongSumReducer.INSTANCE);
+        registerReducer(mi, new TestLongSumReducer());
 
         if (superstep > 0) {
           broadcast(wi, getReduced(wi));
           broadcast(mi, new LongWritable(-superstep * i));
           broadcast(pi, getReduced(pi));
 
-          registerReduce(pi, new TestLongSumReducer(),
+          registerReducer(pi, new TestLongSumReducer(),
               (LongWritable) getReduced(pi));
 
           assertEquals(superstep * (getTotalNumVertices() * i) + w,
@@ -142,7 +142,7 @@ public class ReducersBenchmark extends GiraphBenchmark {
           assertEquals(superstep * getTotalNumVertices() * i,
               ((LongWritable) getReduced(pi)).get());
         } else {
-          registerReduce(pi, new TestLongSumReducer());
+          registerReducer(pi, new TestLongSumReducer());
         }
       }
     }

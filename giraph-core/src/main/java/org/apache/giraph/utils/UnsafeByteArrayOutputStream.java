@@ -19,6 +19,7 @@ package org.apache.giraph.utils;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.io.UTFDataFormatException;
 import java.lang.reflect.Field;
 import java.util.Arrays;
 
@@ -287,6 +288,11 @@ public class UnsafeByteArrayOutputStream extends OutputStream
       } else {
         utflen += 2;
       }
+    }
+
+    if (utflen > 65535) {
+      throw new UTFDataFormatException(
+          "encoded string too long: " + utflen + " bytes");
     }
 
     ensureSize(utflen + SIZE_OF_SHORT);

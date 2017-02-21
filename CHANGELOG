@@ -1,6 +1,87 @@
 Giraph Change Log
 
-Release 1.1.0 - unreleased
+Release 1.2.0 - unreleased
+=======
+  GIRAPH-1023: Adding out-of-core messages to previously implemented adaptive out-of-core 
+  mechanism (heslami via aching)
+
+  GIRAPH-1022: Out-of-core mechanism for input superstep and graph data (heslami via aching)
+
+  GIRAPH-1021: Missing progress report for graph mutations. (heslami via aching)
+
+  GIRAPH-1020: TaskInfo equality condition. (heslami via aching)
+
+  GIRAPH-1019: Optimizing and debugging vertex mutation. (heslami via aching)
+
+  GIRAPH-1018: Improving PartitionStore API to better match its expected behaviour
+  (heslami via aching)
+
+  GIRAPH-1012: Remove giraph-hive (majakabiljo)
+
+  GIRAPH-1009: Spammy 'lost reservation' messages from ZooKeeper in workers' log at the end of
+  the computation. (heslami via aching)
+
+  GIRAPH-1008: Create Computation per thread instead of per partition (majakabiljo)
+
+  GIRAPH-1004: Allow changing hadoop output format (majakabiljo)
+
+  GIRAPH-1002: Improve message changing through iters (ikabiljo via edunov)
+
+  GIRAPH-998: Close writers in parallel (majaakbiljo)
+
+  GIRAPH-999: Add support for Mapping multi-input formats (dlogothetis via majakabiljo)
+
+  GIRAPH-997: Upgrade findbugs to 3.0.0 (dlogothetis via majakabiljo)
+
+  GIRAPH-996: Large requests degrade performance. Print out warnings. (dlogothetis via majakabiljo)
+
+  GIRAPH-990. Current trunk will build for hadoop 1.2.0 not 0.20.203 as stated by documentation
+
+  GIRAPH-992: Zookeeper logs have too many NodeExists (edunov)
+
+  GIRAPH-991: Update version of swift (edunov)
+
+  GIRAPH-987: Improve naming for ReduceOperation (ikabiljo via majakabiljo)
+
+  GIRAPH-986: Add no-arg constructor to BasicSet (ikabiljo via edunov)
+
+  GIRAPH-985: Add more metrics (majakabiljo)
+
+  GIRAPH-986: Add more stuff to TypeOps (ikabiljo via majakabiljo)
+
+  GIRAPH-962: TextAggregatorWriter with frequency AT_THE_END writes in every superstep (mju via majakabiljo)
+
+  GIRAPH-967: (Strongly Connected Components) bug fix (mhan via majakabiljo)
+ 
+  GIRAPH-980 Way to disable checkpoints for particular job and on particular supersteps (edunov)
+ 
+  GIRAPH-983 Remove checkpoint related error messages from console (edunov)
+
+  GIRAPH-978 Giraph-Debugger Test Graphs not working (nishantgandhi99 via edunov)
+
+  GIRAPH-979: Add type of input to 'missing input' error message (majakabiljo)
+
+  GIRAPH-975: In-proc ZooKeeper server with Master process (edunov)
+
+  GIRAPH-977: useMessageSizeEncoding is broken (majakabiljo)
+
+  GIRAPH-976: More command line logging (majakabiljo)
+  
+  GIRAPH-972: Race condition in checkpointing (edunov)
+
+  GIRAPH-905: Giraph Debugger (netj via edunov)
+
+  GIRAPH-966: Add a way to ignore some thread exceptions (majakabiljo)
+
+  GIRAPH-964: Remove quotes from output partition specification in hive-io (majakabiljo)
+
+  GIRAPH-963: Aggregators may not be initialized properly (edunov via majakabiljo)
+
+  GIRAPH-955: Allow vertex/edge/message value to be configurable (ikabiljo via majakabiljo)
+
+Release 1.1.0 - 2014-11-19
+  GIRAPH-961: Internals of MasterLoggingAggregator have been incorrectly removed
+
   GIRAPH-938: Allow fast working with primitives generically (ikabiljo via pavanka)
 
   GIRAPH-945: Always use job Configuration to create Configuration (majakabiljo)

@@ -48,24 +48,20 @@ public interface MessageStore<I extends WritableComparable,
    *
    * @param vertexId Vertex id for which we want to get messages
    * @return Iterable of messages for a vertex id
-   * @throws java.io.IOException
    */
-  Iterable<M> getVertexMessages(I vertexId) throws IOException;
+  Iterable<M> getVertexMessages(I vertexId);
 
   /**
    * Clears messages for a vertex.
    *
    * @param vertexId Vertex id for which we want to clear messages
-   * @throws IOException
    */
-  void clearVertexMessages(I vertexId) throws IOException;
+  void clearVertexMessages(I vertexId);
 
   /**
    * Clears all resources used by this store.
-   *
-   * @throws IOException
    */
-  void clearAll() throws IOException;
+  void clearAll();
 
   /**
    * Check if we have messages for some vertex
@@ -76,15 +72,21 @@ public interface MessageStore<I extends WritableComparable,
   boolean hasMessagesForVertex(I vertexId);
 
   /**
+   * Check if we have messages for some partition
+   *
+   * @param partitionId Id of partition which we want to check
+   * @return True iff we have messages for the given partition
+   */
+  boolean hasMessagesForPartition(int partitionId);
+
+  /**
    * Adds messages for partition
    *
    * @param partitionId Id of partition
    * @param messages    Collection of vertex ids and messages we want to add
-   * @throws IOException
    */
   void addPartitionMessages(
-      int partitionId, VertexIdMessages<I, M> messages)
-    throws IOException;
+      int partitionId, VertexIdMessages<I, M> messages);
 
   /**
    * Called before start of computation in bspworker
@@ -105,9 +107,8 @@ public interface MessageStore<I extends WritableComparable,
    * Clears messages for a partition.
    *
    * @param partitionId Partition id for which we want to clear messages
-   * @throws IOException
    */
-  void clearPartition(int partitionId) throws IOException;
+  void clearPartition(int partitionId);
 
   /**
    * Serialize messages for one partition.

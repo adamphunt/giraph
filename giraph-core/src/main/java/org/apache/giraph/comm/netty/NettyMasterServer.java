@@ -22,6 +22,7 @@ import java.net.InetSocketAddress;
 
 import org.apache.giraph.bsp.CentralizedServiceMaster;
 import org.apache.giraph.comm.MasterServer;
+import org.apache.giraph.comm.flow_control.FlowControl;
 import org.apache.giraph.comm.netty.handler.MasterRequestServerHandler;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
 import org.apache.hadoop.util.Progressable;
@@ -57,7 +58,17 @@ public class NettyMasterServer implements MasterServer {
   }
 
   @Override
+  public String getLocalHostOrIp() {
+    return nettyServer.getLocalHostOrIp();
+  }
+
+  @Override
   public void close() {
     nettyServer.stop();
+  }
+
+  @Override
+  public void setFlowControl(FlowControl flowControl) {
+    nettyServer.setFlowControl(flowControl);
   }
 }

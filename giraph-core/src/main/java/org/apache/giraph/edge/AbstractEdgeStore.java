@@ -23,9 +23,11 @@ import org.apache.giraph.bsp.CentralizedServiceWorker;
 import org.apache.giraph.conf.DefaultImmutableClassesGiraphConfigurable;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
 import org.apache.giraph.graph.Vertex;
+import org.apache.giraph.ooc.OutOfCoreEngine;
 import org.apache.giraph.partition.Partition;
 import org.apache.giraph.utils.CallableFactory;
 import org.apache.giraph.utils.ProgressableUtils;
+import org.apache.giraph.utils.Trimmable;
 import org.apache.giraph.utils.VertexIdEdgeIterator;
 import org.apache.giraph.utils.VertexIdEdges;
 import org.apache.hadoop.io.Writable;
@@ -33,12 +35,15 @@ import org.apache.hadoop.io.WritableComparable;
 import org.apache.hadoop.util.Progressable;
 import org.apache.log4j.Logger;
 
+import java.io.DataInput;
+import java.io.DataOutput;
+import java.io.IOException;
 import java.util.Iterator;
 import java.util.Map;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentMap;
+
+import static com.google.common.base.Preconditions.checkState;
 
 /**
  * Basic implementation of edges store, extended this to easily define simple
@@ -74,6 +79,8 @@ public abstract class AbstractEdgeStore<I extends WritableComparable,
    * from the one used during computation.
    */
   protected boolean useInputOutEdges;
+  /** Whether we spilled edges on disk */
+  private boolean hasEdgesOnDisk = false;
 
   /**
    * Constructor.
@@ -129,6 +136,23 @@ public abstract class AbstractEdgeStore<I extends WritableComparable,
   protected abstract OutEdges<I, E> getPartitionEdges(Et entry);
 
   /**
+   * Writes the given key to the output
+   *
+   * @param key input key to be written
+   * @param output output to write the key to
+   */
+  protected abstract void writeVertexKey(K key, DataOutput output)
+  throws IOException;
+
+  /**
+   * Reads the given key from the input
+   *
+   * @param input input to read the key from
+   * @return Key read from the input
+   */
+  protected abstract K readVertexKey(DataInput input) throws IOException;
+
+  /**
    * Get iterator for partition edges
    *
    * @param partitionEdges map of out-edges for vertices in a partition
@@ -136,6 +160,43 @@ public abstract class AbstractEdgeStore<I extends WritableComparable,
    */
   protected abstract Iterator<Et>
   getPartitionEdgesIterator(Map<K, OutEdges<I, E>> partitionEdges);
+
+  @Override
+  public boolean hasEdgesForPartition(int partitionId) {
+    return transientEdges.containsKey(partitionId);
+  }
+
+  @Override
+  public void writePartitionEdgeStore(int partitionId, DataOutput output)
+      throws IOException {
+    Map<K, OutEdges<I, E>> edges = transientEdges.remove(partitionId);
+    if (edges != null) {
+      output.writeInt(edges.size());
+      if (edges.size() > 0) {
+        hasEdgesOnDisk = true;
+      }
+      for (Map.Entry<K, OutEdges<I, E>> edge : edges.entrySet()) {
+        writeVertexKey(edge.getKey(), output);
+        edge.getValue().write(output);
+      }
+    }
+  }
+
+  @Override
+  public void readPartitionEdgeStore(int partitionId, DataInput input)
+      throws IOException {
+    checkState(!transientEdges.containsKey(partitionId),
+        "readPartitionEdgeStore: reading a partition that is already there in" +
+            " the partition store (impossible)");
+    Map<K, OutEdges<I, E>> partitionEdges = getPartitionEdges(partitionId);
+    int numEntries = input.readInt();
+    for (int i = 0; i < numEntries; ++i) {
+      K vertexKey = readVertexKey(input);
+      OutEdges<I, E> edges = configuration.createAndInitializeInputOutEdges();
+      edges.readFields(input);
+      partitionEdges.put(vertexKey, edges);
+    }
+  }
 
   /**
    * Get out-edges for a given vertex
@@ -187,7 +248,7 @@ public abstract class AbstractEdgeStore<I extends WritableComparable,
   @Override
   public void moveEdgesToVertices() {
     final boolean createSourceVertex = configuration.getCreateSourceVertex();
-    if (transientEdges.isEmpty()) {
+    if (transientEdges.isEmpty() && !hasEdgesOnDisk) {
       if (LOG.isInfoEnabled()) {
         LOG.info("moveEdgesToVertices: No edges to move");
       }
@@ -198,9 +259,7 @@ public abstract class AbstractEdgeStore<I extends WritableComparable,
       LOG.info("moveEdgesToVertices: Moving incoming edges to vertices.");
     }
 
-    final BlockingQueue<Integer> partitionIdQueue =
-        new ArrayBlockingQueue<>(transientEdges.size());
-    partitionIdQueue.addAll(transientEdges.keySet());
+    service.getPartitionStore().startIteration();
     int numThreads = configuration.getNumInputSplitsThreads();
 
     CallableFactory<Void> callableFactory = new CallableFactory<Void>() {
@@ -211,15 +270,35 @@ public abstract class AbstractEdgeStore<I extends WritableComparable,
           public Void call() throws Exception {
             Integer partitionId;
             I representativeVertexId = configuration.createVertexId();
-            while ((partitionId = partitionIdQueue.poll()) != null) {
+            OutOfCoreEngine oocEngine = service.getServerData().getOocEngine();
+            if (oocEngine != null) {
+              oocEngine.processingThreadStart();
+            }
+            while (true) {
               Partition<I, V, E> partition =
-                  service.getPartitionStore().getOrCreatePartition(partitionId);
+                  service.getPartitionStore().getNextPartition();
+              if (partition == null) {
+                break;
+              }
               Map<K, OutEdges<I, E>> partitionEdges =
-                  transientEdges.remove(partitionId);
+                  transientEdges.remove(partition.getId());
+              if (partitionEdges == null) {
+                service.getPartitionStore().putPartition(partition);
+                continue;
+              }
+
               Iterator<Et> iterator =
                   getPartitionEdgesIterator(partitionEdges);
               // process all vertices in given partition
+              int count = 0;
               while (iterator.hasNext()) {
+                // If out-of-core mechanism is used, check whether this thread
+                // can stay active or it should temporarily suspend and stop
+                // processing and generating more data for the moment.
+                if (oocEngine != null &&
+                    (++count & OutOfCoreEngine.CHECK_IN_INTERVAL) == 0) {
+                  oocEngine.activeThreadCheckIn();
+                }
                 Et entry = iterator.next();
                 I vertexId = getVertexId(entry, representativeVertexId);
                 OutEdges<I, E> outEdges = convertInputToComputeEdges(
@@ -245,6 +324,9 @@ public abstract class AbstractEdgeStore<I extends WritableComparable,
                       vertex.addEdge(edge);
                     }
                   }
+                  if (vertex instanceof Trimmable) {
+                    ((Trimmable) vertex).trim();
+                  }
                   // Some Partition implementations (e.g. ByteArrayPartition)
                   // require us to put back the vertex after modifying it.
                   partition.saveVertex(vertex);
@@ -255,6 +337,9 @@ public abstract class AbstractEdgeStore<I extends WritableComparable,
               // (e.g. DiskBackedPartitionStore) require us to put back the
               // partition after modifying it.
               service.getPartitionStore().putPartition(partition);
+            }
+            if (oocEngine != null) {
+              oocEngine.processingThreadFinish();
             }
             return null;
           }

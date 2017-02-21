@@ -18,18 +18,28 @@
 
 package org.apache.giraph.conf;
 
+import io.netty.buffer.ByteBufAllocator;
+import io.netty.buffer.PooledByteBufAllocator;
+import io.netty.buffer.UnpooledByteBufAllocator;
+
+import java.net.InetAddress;
+import java.net.UnknownHostException;
+
 import org.apache.giraph.aggregators.AggregatorWriter;
+import org.apache.giraph.bsp.checkpoints.CheckpointSupportedChecker;
 import org.apache.giraph.combiner.MessageCombiner;
 import org.apache.giraph.edge.OutEdges;
 import org.apache.giraph.edge.ReuseObjectsOutEdges;
 import org.apache.giraph.factories.ComputationFactory;
-import org.apache.giraph.graph.Vertex;
-import org.apache.giraph.graph.VertexValueCombiner;
-import org.apache.giraph.graph.VertexResolver;
 import org.apache.giraph.factories.VertexValueFactory;
 import org.apache.giraph.graph.Computation;
+import org.apache.giraph.graph.MapperObserver;
+import org.apache.giraph.graph.Vertex;
+import org.apache.giraph.graph.VertexResolver;
+import org.apache.giraph.graph.VertexValueCombiner;
 import org.apache.giraph.io.EdgeInputFormat;
 import org.apache.giraph.io.EdgeOutputFormat;
+import org.apache.giraph.io.MappingInputFormat;
 import org.apache.giraph.io.VertexInputFormat;
 import org.apache.giraph.io.VertexOutputFormat;
 import org.apache.giraph.io.filters.EdgeInputFilter;
@@ -47,12 +57,6 @@ import org.apache.giraph.worker.WorkerObserver;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.mapreduce.Mapper;
 import org.apache.hadoop.net.DNS;
-
-import io.netty.buffer.ByteBufAllocator;
-import io.netty.buffer.PooledByteBufAllocator;
-import io.netty.buffer.UnpooledByteBufAllocator;
-
-import java.net.UnknownHostException;
 
 /**
  * Adds user methods specific to Giraph.  This will be put into an
@@ -270,6 +274,16 @@ public class GiraphConfiguration extends Configuration
   }
 
   /**
+   * Set the mapping input format class (optional)
+   *
+   * @param mappingInputFormatClass Determines how mappings are input
+   */
+  public void setMappingInputFormatClass(
+    Class<? extends MappingInputFormat> mappingInputFormatClass) {
+    MAPPING_INPUT_FORMAT_CLASS.set(this, mappingInputFormatClass);
+  }
+
+  /**
    * Set the master class (optional)
    *
    * @param masterComputeClass Runs master computation
@@ -297,6 +311,16 @@ public class GiraphConfiguration extends Configuration
   public final void addWorkerObserverClass(
       Class<? extends WorkerObserver> workerObserverClass) {
     WORKER_OBSERVER_CLASSES.add(this, workerObserverClass);
+  }
+
+  /**
+   * Add a MapperObserver class (optional)
+   *
+   * @param mapperObserverClass MapperObserver class to add.
+   */
+  public final void addMapperObserverClass(
+      Class<? extends MapperObserver> mapperObserverClass) {
+    MAPPER_OBSERVER_CLASSES.add(this, mapperObserverClass);
   }
 
   /**
@@ -515,15 +539,6 @@ public class GiraphConfiguration extends Configuration
   }
 
   /**
-   * Get the message combiner class (optional)
-   *
-   * @return messageCombinerClass Determines how vertex messages are combined
-   */
-  public Class<? extends MessageCombiner> getMessageCombinerClass() {
-    return MESSAGE_COMBINER_CLASS.get(this);
-  }
-
-  /**
    * Set the message combiner class (optional)
    *
    * @param messageCombinerClass Determines how vertex messages are combined
@@ -683,6 +698,15 @@ public class GiraphConfiguration extends Configuration
   }
 
   /**
+   * Get array of MapperObserver classes set in configuration.
+   *
+   * @return array of MapperObserver classes.
+   */
+  public Class<? extends MapperObserver>[] getMapperObserverClasses() {
+    return MAPPER_OBSERVER_CLASSES.getArray(this);
+  }
+
+  /**
    * Whether to track, print, and aggregate metrics.
    *
    * @return true if metrics are enabled, false otherwise (default)
@@ -810,16 +834,6 @@ public class GiraphConfiguration extends Configuration
     LOCAL_TEST_MODE.set(this, flag);
   }
 
-  /**
-   * The number of server tasks in our ZK quorum for
-   * this job run.
-   *
-   * @return the number of ZK servers in the quorum
-   */
-  public int getZooKeeperServerCount() {
-    return ZOOKEEPER_SERVER_COUNT.get(this);
-  }
-
   public int getZooKeeperSessionTimeout() {
     return ZOOKEEPER_SESSION_TIMEOUT.get(this);
   }
@@ -887,14 +901,6 @@ public class GiraphConfiguration extends Configuration
 
   public int getZooKeeperMaxSessionTimeout() {
     return ZOOKEEPER_MAX_SESSION_TIMEOUT.get(this);
-  }
-
-  public boolean getZooKeeperForceSync() {
-    return ZOOKEEPER_FORCE_SYNC.get(this);
-  }
-
-  public boolean getZooKeeperSkipAcl() {
-    return ZOOKEEPER_SKIP_ACL.get(this);
   }
 
   /**
@@ -1003,6 +1009,18 @@ public class GiraphConfiguration extends Configuration
   }
 
   /**
+   * Set runtime checkpoint support checker.
+   * The instance of this class will have to decide whether
+   * checkpointing is allowed on current superstep.
+   *
+   * @param clazz checkpoint supported checker class
+   */
+  public void setCheckpointSupportedChecker(
+      Class<? extends CheckpointSupportedChecker> clazz) {
+    GiraphConstants.CHECKPOINT_SUPPORTED_CHECKER.set(this, clazz);
+  }
+
+  /**
    * Set the max task attempts
    *
    * @param maxTaskAttempts Max task attempts to use
@@ -1095,6 +1113,19 @@ public class GiraphConfiguration extends Configuration
   }
 
   /**
+   * Return local host name by default. Or local host IP if preferIP
+   * option is set.
+   * @return local host name or IP
+   * @throws UnknownHostException
+   */
+  public String getLocalHostOrIp() throws UnknownHostException {
+    if (GiraphConstants.PREFER_IP_ADDRESSES.get(this)) {
+      return InetAddress.getLocalHost().getHostAddress();
+    }
+    return getLocalHostname();
+  }
+
+  /**
    * Set the maximum number of supersteps of this application.  After this
    * many supersteps are executed, the application will shutdown.
    *
@@ -1112,15 +1143,6 @@ public class GiraphConfiguration extends Configuration
    */
   public int getMaxNumberOfSupersteps() {
     return MAX_NUMBER_OF_SUPERSTEPS.get(this);
-  }
-
-  /**
-   * Whether the application with change or not the graph topology.
-   *
-   * @return true if the graph is static, false otherwise.
-   */
-  public boolean isStaticGraph() {
-    return STATIC_GRAPH.isTrue(this);
   }
 
   /**
@@ -1181,16 +1203,6 @@ public class GiraphConfiguration extends Configuration
     value = value.replace("%TASK_ID%", context.getTaskAttemptID().toString());
     value = value.replace("%USER%", get("user.name", "unknown_user"));
     return value;
-  }
-
-  /**
-   * Return if oneMessageToManyIds encoding can be enabled
-   *
-   * @return True if this option is true.
-   */
-  public boolean useOneMessageToManyIdsEncoding() {
-    return MESSAGE_ENCODE_AND_STORE_TYPE.get(this)
-      .useOneMessageToManyIdsEncoding();
   }
 
   /**

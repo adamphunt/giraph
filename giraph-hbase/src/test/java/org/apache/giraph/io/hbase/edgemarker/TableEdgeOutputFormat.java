@@ -25,7 +25,6 @@ import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.io.Text;
-import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.mapreduce.RecordWriter;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
 
@@ -63,12 +62,13 @@ public class TableEdgeOutputFormat
         public void writeVertex(
                 Vertex<Text, Text, Text> vertex)
                 throws IOException, InterruptedException {
-              RecordWriter<ImmutableBytesWritable, Mutation> writer = getRecordWriter();
+              RecordWriter<ImmutableBytesWritable, Mutation>
+                  writer = getRecordWriter();
               byte[] rowBytes = vertex.getId().getBytes();
               Put put = new Put(rowBytes);
               Text value = vertex.getValue();
               if (value.toString().length() > 0)   {
-                 put.addColumn(CF, PARENT, value.getBytes());
+                 put.add(CF, PARENT, value.getBytes());
                  writer.write(new ImmutableBytesWritable(rowBytes), put);
               }
         }

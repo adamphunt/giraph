@@ -24,7 +24,7 @@
   <parent>
     <groupId>org.apache.giraph</groupId>
     <artifactId>giraph-parent</artifactId>
-    <version>1.1.0</version>
+    <version>1.2.0-mapr</version>
   </parent>
 
   <artifactId>giraph-dist</artifactId>
@@ -46,6 +46,16 @@
         </plugins>
       </build>
     </profile>
+
+    <profile>
+      <id>hadoop_2</id>
+      <dependencies>
+        <dependency>
+          <groupId>org.apache.giraph</groupId>
+          <artifactId>giraph-hbase</artifactId>
+        </dependency>
+      </dependencies>
+      </profile>
   </profiles>
 
   <build>
@@ -89,10 +99,6 @@
     </dependency>
     <dependency>
       <groupId>org.apache.giraph</groupId>
-      <artifactId>giraph-hbase</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>org.apache.giraph</groupId>
       <artifactId>giraph-accumulo</artifactId>
     </dependency>
     <dependency>
@@ -101,29 +107,11 @@
     </dependency>
     <dependency>
       <groupId>org.apache.giraph</groupId>
-      <artifactId>giraph-hive</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>org.apache.giraph</groupId>
       <artifactId>giraph-examples</artifactId>
     </dependency>
     <dependency>
       <groupId>org.apache.giraph</groupId>
       <artifactId>giraph-gora</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>org.apache.giraph</groupId>
-      <artifactId>giraph-kibble</artifactId>
-      <exclusions>
-        <exclusion>
-          <groupId>javax.servlet</groupId>
-          <artifactId>javax.servlet-api</artifactId>
-        </exclusion>
-      </exclusions>
-    </dependency>
-    <dependency>
-      <groupId>org.apache.giraph</groupId>
-      <artifactId>giraph-rexster-io</artifactId>
     </dependency>
   </dependencies>
 </project>

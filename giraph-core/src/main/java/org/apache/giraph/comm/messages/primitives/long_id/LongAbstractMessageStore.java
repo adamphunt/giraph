@@ -26,11 +26,9 @@ import org.apache.giraph.bsp.CentralizedServiceWorker;
 import org.apache.giraph.comm.messages.MessageStore;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
 import org.apache.giraph.factories.MessageValueFactory;
-import org.apache.giraph.partition.Partition;
 import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.Writable;
 
-import java.io.IOException;
 import java.util.List;
 
 /**
@@ -73,13 +71,10 @@ public abstract class LongAbstractMessageStore<M extends Writable, T>
 
     map = new Int2ObjectOpenHashMap<>();
     for (int partitionId : service.getPartitionStore().getPartitionIds()) {
-      Partition<LongWritable, Writable, Writable> partition =
-          service.getPartitionStore().getOrCreatePartition(partitionId);
-      Long2ObjectOpenHashMap<T> partitionMap =
-          new Long2ObjectOpenHashMap<T>(
-              (int) partition.getVertexCount());
+      Long2ObjectOpenHashMap<T> partitionMap = new Long2ObjectOpenHashMap<T>(
+          (int) service.getPartitionStore()
+              .getPartitionVertexCount(partitionId));
       map.put(partitionId, partitionMap);
-      service.getPartitionStore().putPartition(partition);
     }
   }
 
@@ -95,7 +90,7 @@ public abstract class LongAbstractMessageStore<M extends Writable, T>
   }
 
   @Override
-  public void clearPartition(int partitionId) throws IOException {
+  public void clearPartition(int partitionId) {
     map.get(partitionId).clear();
   }
 
@@ -105,13 +100,19 @@ public abstract class LongAbstractMessageStore<M extends Writable, T>
   }
 
   @Override
-  public void clearVertexMessages(LongWritable vertexId) throws IOException {
+  public boolean hasMessagesForPartition(int partitionId) {
+    Long2ObjectOpenHashMap<T> partitionMessages = map.get(partitionId);
+    return partitionMessages != null && !partitionMessages.isEmpty();
+  }
+
+  @Override
+  public void clearVertexMessages(LongWritable vertexId) {
     getPartitionMap(vertexId).remove(vertexId.get());
   }
 
 
   @Override
-  public void clearAll() throws IOException {
+  public void clearAll() {
     map.clear();
   }
 
@@ -128,5 +129,4 @@ public abstract class LongAbstractMessageStore<M extends Writable, T>
     }
     return vertices;
   }
-
 }

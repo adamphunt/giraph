@@ -19,6 +19,7 @@ package org.apache.giraph.types.ops;
 
 import org.apache.giraph.types.ops.collections.Basic2ObjectMap;
 import org.apache.giraph.types.ops.collections.BasicSet;
+import org.apache.giraph.types.ops.collections.WritableWriter;
 
 
 
@@ -37,19 +38,44 @@ public interface PrimitiveIdTypeOps<T> extends PrimitiveTypeOps<T> {
   // primitive collections
 
   /**
+   * Create BasicSet of type T.
+   * @return BasicSet
+   */
+  BasicSet<T> createOpenHashSet();
+
+  /**
    * Create BasicSet of type T, given capacity.
    * @param capacity Capacity
    * @return BasicSet
    */
-  BasicSet<T> createOpenHashSet(int capacity);
+  BasicSet<T> createOpenHashSet(long capacity);
+
+  /**
+   * Create Basic2ObjectMap with key type T.
+   * Values are represented as object, even if they can be primitive.
+   *
+   * You can pass null as valueWriter,
+   * but readFields/write will throw an Exception, if called.
+   *
+   * @param valueWriter Writer of values
+   * @param <V> Type of values in the map
+   * @return Basic2ObjectMap
+   */
+  <V> Basic2ObjectMap<T, V> create2ObjectOpenHashMap(
+      WritableWriter<V> valueWriter);
 
   /**
    * Create Basic2ObjectMap with key type T, given capacity.
    * Values are represented as object, even if they can be primitive.
    *
+   * You can pass null as valueWriter,
+   * but readFields/write will throw an Exception, if called.
+   *
    * @param capacity Capacity
+   * @param valueWriter Writer of values
    * @param <V> Type of values in the map
    * @return Basic2ObjectMap
    */
-  <V> Basic2ObjectMap<T, V> create2ObjectOpenHashMap(int capacity);
+  <V> Basic2ObjectMap<T, V> create2ObjectOpenHashMap(
+      int capacity, WritableWriter<V> valueWriter);
 }

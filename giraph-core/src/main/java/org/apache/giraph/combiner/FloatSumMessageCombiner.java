@@ -23,10 +23,12 @@ import org.apache.hadoop.io.WritableComparable;
 
 /**
  * A combiner that sums float-valued messages
+ *
+ * Use SumMessageCombiner.DOUBLE instead.
  */
+@Deprecated
 public class FloatSumMessageCombiner
-    extends
-    MessageCombiner<WritableComparable, FloatWritable> {
+    implements MessageCombiner<WritableComparable, FloatWritable> {
   @Override
   public void combine(WritableComparable vertexIndex,
       FloatWritable originalMessage, FloatWritable messageToCombine) {

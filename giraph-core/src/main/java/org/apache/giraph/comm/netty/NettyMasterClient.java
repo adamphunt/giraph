@@ -25,7 +25,9 @@ import org.apache.giraph.comm.GlobalCommType;
 import org.apache.giraph.comm.MasterClient;
 import org.apache.giraph.comm.aggregators.AggregatorUtils;
 import org.apache.giraph.comm.aggregators.SendGlobalCommCache;
+import org.apache.giraph.comm.flow_control.FlowControl;
 import org.apache.giraph.comm.requests.SendAggregatorsToOwnerRequest;
+import org.apache.giraph.comm.requests.WritableRequest;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
 import org.apache.giraph.worker.WorkerInfo;
 import org.apache.hadoop.io.Writable;
@@ -117,7 +119,17 @@ public class NettyMasterClient implements MasterClient {
   }
 
   @Override
+  public void sendWritableRequest(int destTaskId, WritableRequest request) {
+    nettyClient.sendWritableRequest(destTaskId, request);
+  }
+
+  @Override
   public void closeConnections() {
     nettyClient.stop();
+  }
+
+  @Override
+  public FlowControl getFlowControl() {
+    return nettyClient.getFlowControl();
   }
 }

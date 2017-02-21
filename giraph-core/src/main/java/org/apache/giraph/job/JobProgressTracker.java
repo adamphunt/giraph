@@ -18,26 +18,15 @@
 
 package org.apache.giraph.job;
 
-import org.apache.giraph.conf.IntConfOption;
-import org.apache.giraph.conf.StrConfOption;
-import org.apache.giraph.worker.WorkerProgress;
-
 import com.facebook.swift.service.ThriftMethod;
 import com.facebook.swift.service.ThriftService;
+import org.apache.giraph.worker.WorkerProgress;
 
 /**
  * Interface for job progress tracker on job client
  */
 @ThriftService
 public interface JobProgressTracker {
-  /** Host on which job progress service runs */
-  StrConfOption JOB_PROGRESS_SERVICE_HOST =
-      new StrConfOption("giraph.jobProgressServiceHost", null,
-          "Host on which job progress service runs");
-  /** Port which job progress service uses */
-  IntConfOption JOB_PROGRESS_SERVICE_PORT =
-      new IntConfOption("giraph.jobProgressServicePort", -1,
-          "Port which job progress service uses");
 
   /** Notify JobProgressTracker that mapper started */
   @ThriftMethod
@@ -50,6 +39,15 @@ public interface JobProgressTracker {
    */
   @ThriftMethod
   void logInfo(String logLine);
+
+  /**
+   * Call this when you want to log an error line from any mapper to command
+   * line
+   *
+   * @param logLine Line to log
+   */
+  @ThriftMethod
+  void logError(String logLine);
 
   /**
    * Notify that job is failing

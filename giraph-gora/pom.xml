@@ -16,7 +16,7 @@
     <parent>
         <groupId>org.apache.giraph</groupId>
         <artifactId>giraph-parent</artifactId>
-        <version>1.1.0</version>
+        <version>1.2.0-mapr</version>
     </parent>
     <artifactId>giraph-gora</artifactId>
     <packaging>jar</packaging>
@@ -70,6 +70,13 @@
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>findbugs-maven-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.rat</groupId>
+                <artifactId>apache-rat-plugin</artifactId>
+                <configuration>
+                    <basedir>${project.basedir}/..</basedir>
+                </configuration>
             </plugin>
         </plugins>
     </build>

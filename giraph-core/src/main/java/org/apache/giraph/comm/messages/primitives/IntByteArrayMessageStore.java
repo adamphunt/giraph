@@ -23,7 +23,6 @@ import org.apache.giraph.comm.messages.MessageStore;
 import org.apache.giraph.comm.messages.MessagesIterable;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
 import org.apache.giraph.factories.MessageValueFactory;
-import org.apache.giraph.partition.Partition;
 import org.apache.giraph.utils.VertexIdMessageBytesIterator;
 import org.apache.giraph.utils.VertexIdMessageIterator;
 import org.apache.giraph.utils.VertexIdMessages;
@@ -84,13 +83,11 @@ public class IntByteArrayMessageStore<M extends Writable>
     map =
         new Int2ObjectOpenHashMap<Int2ObjectOpenHashMap<DataInputOutput>>();
     for (int partitionId : service.getPartitionStore().getPartitionIds()) {
-      Partition<IntWritable, Writable, Writable> partition =
-          service.getPartitionStore().getOrCreatePartition(partitionId);
       Int2ObjectOpenHashMap<DataInputOutput> partitionMap =
           new Int2ObjectOpenHashMap<DataInputOutput>(
-              (int) partition.getVertexCount());
+              (int) service.getPartitionStore()
+                  .getPartitionVertexCount(partitionId));
       map.put(partitionId, partitionMap);
-      service.getPartitionStore().putPartition(partition);
     }
   }
 
@@ -130,8 +127,7 @@ public class IntByteArrayMessageStore<M extends Writable>
 
   @Override
   public void addPartitionMessages(int partitionId,
-      VertexIdMessages<IntWritable, M> messages) throws
-      IOException {
+      VertexIdMessages<IntWritable, M> messages) {
     Int2ObjectOpenHashMap<DataInputOutput> partitionMap =
         map.get(partitionId);
     synchronized (partitionMap) {
@@ -152,14 +148,19 @@ public class IntByteArrayMessageStore<M extends Writable>
               dataInputOutput.getDataOutput());
         }
       } else {
-        VertexIdMessageIterator<IntWritable, M>
-            iterator = messages.getVertexIdMessageIterator();
-        while (iterator.hasNext()) {
-          iterator.next();
-          DataInputOutput dataInputOutput =  getDataInputOutput(partitionMap,
-              iterator.getCurrentVertexId().get());
-          VerboseByteStructMessageWrite.verboseWriteCurrentMessage(iterator,
-              dataInputOutput.getDataOutput());
+        try {
+          VertexIdMessageIterator<IntWritable, M>
+              iterator = messages.getVertexIdMessageIterator();
+          while (iterator.hasNext()) {
+            iterator.next();
+            DataInputOutput dataInputOutput = getDataInputOutput(partitionMap,
+                iterator.getCurrentVertexId().get());
+            VerboseByteStructMessageWrite.verboseWriteCurrentMessage(iterator,
+                dataInputOutput.getDataOutput());
+          }
+        } catch (IOException e) {
+          throw new RuntimeException("addPartitionMessages: IOException while" +
+              " adding messages for a partition: " + e);
         }
       }
     }
@@ -170,7 +171,7 @@ public class IntByteArrayMessageStore<M extends Writable>
   }
 
   @Override
-  public void clearPartition(int partitionId) throws IOException {
+  public void clearPartition(int partitionId) {
     map.get(partitionId).clear();
   }
 
@@ -180,8 +181,15 @@ public class IntByteArrayMessageStore<M extends Writable>
   }
 
   @Override
+  public boolean hasMessagesForPartition(int partitionId) {
+    Int2ObjectOpenHashMap<DataInputOutput> partitionMessages =
+        map.get(partitionId);
+    return partitionMessages != null && !partitionMessages.isEmpty();
+  }
+
+  @Override
   public Iterable<M> getVertexMessages(
-      IntWritable vertexId) throws IOException {
+      IntWritable vertexId) {
     DataInputOutput dataInputOutput =
         getPartitionMap(vertexId).get(vertexId.get());
     if (dataInputOutput == null) {
@@ -192,12 +200,12 @@ public class IntByteArrayMessageStore<M extends Writable>
   }
 
   @Override
-  public void clearVertexMessages(IntWritable vertexId) throws IOException {
+  public void clearVertexMessages(IntWritable vertexId) {
     getPartitionMap(vertexId).remove(vertexId.get());
   }
 
   @Override
-  public void clearAll() throws IOException {
+  public void clearAll() {
     map.clear();
   }
 

@@ -22,9 +22,8 @@ import java.io.IOException;
 import java.util.List;
 
 import org.apache.giraph.master.AggregatorToGlobalCommTranslation;
-import org.apache.giraph.master.MasterAggregatorHandler;
 import org.apache.giraph.master.MasterCompute;
-import org.apache.giraph.master.MasterInfo;
+import org.apache.giraph.master.MasterGlobalCommHandler;
 import org.apache.giraph.worker.WorkerInfo;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableComparable;
@@ -52,13 +51,6 @@ public interface CentralizedServiceMaster<I extends WritableComparable,
    * @return true if became the master, false if the application is done.
    */
   boolean becomeMaster();
-
-  /**
-   * Get master information
-   *
-   * @return Master information
-   */
-  MasterInfo getMasterInfo();
 
   /**
    * Check all the {@link org.apache.giraph.worker.WorkerInfo} objects to ensure
@@ -144,7 +136,7 @@ public interface CentralizedServiceMaster<I extends WritableComparable,
    *
    * @return Global communication handler
    */
-  MasterAggregatorHandler getGlobalCommHandler();
+  MasterGlobalCommHandler getGlobalCommHandler();
 
   /**
    * Handler for aggregators to reduce/broadcast translation

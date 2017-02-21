@@ -31,7 +31,6 @@ import org.apache.giraph.combiner.MessageCombiner;
 import org.apache.giraph.comm.messages.MessageStore;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
 import org.apache.giraph.factories.MessageValueFactory;
-import org.apache.giraph.partition.Partition;
 import org.apache.giraph.types.ops.PrimitiveIdTypeOps;
 import org.apache.giraph.types.ops.TypeOpsUtils;
 import org.apache.giraph.types.ops.collections.Basic2ObjectMap;
@@ -62,7 +61,7 @@ public class IdOneMessagePerVertexStore<I extends WritableComparable,
   /** Message value factory */
   private final MessageValueFactory<M> messageValueFactory;
   /** Message messageCombiner */
-  private final MessageCombiner<I, M> messageCombiner;
+  private final MessageCombiner<? super I, M> messageCombiner;
   /** Service worker */
   private final CentralizedServiceWorker<I, ?, ?> service;
   /** Giraph configuration */
@@ -95,7 +94,7 @@ public class IdOneMessagePerVertexStore<I extends WritableComparable,
   public IdOneMessagePerVertexStore(
       MessageValueFactory<M> messageValueFactory,
       CentralizedServiceWorker<I, ?, ?> service,
-      MessageCombiner<I, M> messageCombiner,
+      MessageCombiner<? super I, M> messageCombiner,
       ImmutableClassesGiraphConfiguration<I, ?, ?> config) {
     this.service = service;
     this.config = config;
@@ -106,12 +105,10 @@ public class IdOneMessagePerVertexStore<I extends WritableComparable,
 
     map = new Int2ObjectOpenHashMap<>();
     for (int partitionId : service.getPartitionStore().getPartitionIds()) {
-      Partition<I, ?, ?> partition =
-          service.getPartitionStore().getOrCreatePartition(partitionId);
       Basic2ObjectMap<I, M> partitionMap = idTypeOps.create2ObjectOpenHashMap(
-          (int) partition.getVertexCount());
+          Math.max(10, (int) service.getPartitionStore()
+              .getPartitionVertexCount(partitionId)), messageWriter);
       map.put(partitionId, partitionMap);
-      service.getPartitionStore().putPartition((Partition) partition);
     }
   }
 
@@ -128,7 +125,7 @@ public class IdOneMessagePerVertexStore<I extends WritableComparable,
   @Override
   public void addPartitionMessages(
       int partitionId,
-      VertexIdMessages<I, M> messages) throws IOException {
+      VertexIdMessages<I, M> messages) {
     Basic2ObjectMap<I, M> partitionMap = map.get(partitionId);
     synchronized (partitionMap) {
       VertexIdMessageIterator<I, M>
@@ -155,7 +152,7 @@ public class IdOneMessagePerVertexStore<I extends WritableComparable,
   }
 
   @Override
-  public void clearPartition(int partitionId) throws IOException {
+  public void clearPartition(int partitionId) {
     map.get(partitionId).clear();
   }
 
@@ -165,8 +162,13 @@ public class IdOneMessagePerVertexStore<I extends WritableComparable,
   }
 
   @Override
-  public Iterable<M> getVertexMessages(
-      I vertexId) throws IOException {
+  public boolean hasMessagesForPartition(int partitionId) {
+    Basic2ObjectMap<I, M> partitionMessages = map.get(partitionId);
+    return partitionMessages != null && partitionMessages.size() != 0;
+  }
+
+  @Override
+  public Iterable<M> getVertexMessages(I vertexId) {
     Basic2ObjectMap<I, M> partitionMap = getPartitionMap(vertexId);
     if (!partitionMap.containsKey(vertexId)) {
       return EmptyIterable.get();
@@ -176,12 +178,12 @@ public class IdOneMessagePerVertexStore<I extends WritableComparable,
   }
 
   @Override
-  public void clearVertexMessages(I vertexId) throws IOException {
+  public void clearVertexMessages(I vertexId) {
     getPartitionMap(vertexId).remove(vertexId);
   }
 
   @Override
-  public void clearAll() throws IOException {
+  public void clearAll() {
     map.clear();
   }
 
@@ -202,14 +204,15 @@ public class IdOneMessagePerVertexStore<I extends WritableComparable,
   public void writePartition(DataOutput out,
       int partitionId) throws IOException {
     Basic2ObjectMap<I, M> partitionMap = map.get(partitionId);
-    partitionMap.write(out, messageWriter);
+    partitionMap.write(out);
   }
 
   @Override
   public void readFieldsForPartition(DataInput in,
       int partitionId) throws IOException {
-    Basic2ObjectMap<I, M> partitionMap = idTypeOps.create2ObjectOpenHashMap(10);
-    partitionMap.readFields(in, messageWriter);
+    Basic2ObjectMap<I, M> partitionMap = idTypeOps.create2ObjectOpenHashMap(
+        messageWriter);
+    partitionMap.readFields(in);
     synchronized (map) {
       map.put(partitionId, partitionMap);
     }

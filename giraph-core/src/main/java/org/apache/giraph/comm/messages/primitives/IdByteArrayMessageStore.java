@@ -30,7 +30,6 @@ import org.apache.giraph.comm.messages.MessageStore;
 import org.apache.giraph.comm.messages.MessagesIterable;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
 import org.apache.giraph.factories.MessageValueFactory;
-import org.apache.giraph.partition.Partition;
 import org.apache.giraph.types.ops.PrimitiveIdTypeOps;
 import org.apache.giraph.types.ops.TypeOpsUtils;
 import org.apache.giraph.types.ops.collections.Basic2ObjectMap;
@@ -102,14 +101,14 @@ public class IdByteArrayMessageStore<I extends WritableComparable,
 
     map = new Int2ObjectOpenHashMap<Basic2ObjectMap<I, DataInputOutput>>();
     for (int partitionId : service.getPartitionStore().getPartitionIds()) {
-      Partition<I, ?, ?> partition =
-          service.getPartitionStore().getOrCreatePartition(partitionId);
       Basic2ObjectMap<I, DataInputOutput> partitionMap =
           idTypeOps.create2ObjectOpenHashMap(
-              Math.max(10, (int) partition.getVertexCount()));
+              Math.max(10,
+                  (int) service.getPartitionStore()
+                      .getPartitionVertexCount(partitionId)),
+              dataInputOutputWriter);
 
       map.put(partitionId, partitionMap);
-      service.getPartitionStore().putPartition((Partition) partition);
     }
   }
 
@@ -143,7 +142,7 @@ public class IdByteArrayMessageStore<I extends WritableComparable,
 
   @Override
   public void addPartitionMessages(int partitionId,
-      VertexIdMessages<I, M> messages) throws IOException {
+      VertexIdMessages<I, M> messages) {
     Basic2ObjectMap<I, DataInputOutput> partitionMap = map.get(partitionId);
     synchronized (partitionMap) {
       VertexIdMessageBytesIterator<I, M> vertexIdMessageBytesIterator =
@@ -162,22 +161,27 @@ public class IdByteArrayMessageStore<I extends WritableComparable,
               dataInputOutput.getDataOutput());
         }
       } else {
-        VertexIdMessageIterator<I, M> iterator =
-            messages.getVertexIdMessageIterator();
-        while (iterator.hasNext()) {
-          iterator.next();
-          DataInputOutput dataInputOutput =
-              getDataInputOutput(partitionMap, iterator.getCurrentVertexId());
+        try {
+          VertexIdMessageIterator<I, M> iterator =
+              messages.getVertexIdMessageIterator();
+          while (iterator.hasNext()) {
+            iterator.next();
+            DataInputOutput dataInputOutput =
+                getDataInputOutput(partitionMap, iterator.getCurrentVertexId());
 
-          VerboseByteStructMessageWrite.verboseWriteCurrentMessage(iterator,
-              dataInputOutput.getDataOutput());
+            VerboseByteStructMessageWrite.verboseWriteCurrentMessage(iterator,
+                dataInputOutput.getDataOutput());
+          }
+        } catch (IOException e) {
+          throw new RuntimeException("addPartitionMessages: IOException while" +
+              " adding message for a partition: " + e);
         }
       }
     }
   }
 
   @Override
-  public void clearPartition(int partitionId) throws IOException {
+  public void clearPartition(int partitionId) {
     map.get(partitionId).clear();
   }
 
@@ -187,7 +191,14 @@ public class IdByteArrayMessageStore<I extends WritableComparable,
   }
 
   @Override
-  public Iterable<M> getVertexMessages(I vertexId) throws IOException {
+  public boolean hasMessagesForPartition(int partitionId) {
+    Basic2ObjectMap<I, DataInputOutput> partitionMessages =
+        map.get(partitionId);
+    return partitionMessages != null && partitionMessages.size() != 0;
+  }
+
+  @Override
+  public Iterable<M> getVertexMessages(I vertexId) {
     DataInputOutput dataInputOutput = getPartitionMap(vertexId).get(vertexId);
     if (dataInputOutput == null) {
       return EmptyIterable.get();
@@ -197,12 +208,12 @@ public class IdByteArrayMessageStore<I extends WritableComparable,
   }
 
   @Override
-  public void clearVertexMessages(I vertexId) throws IOException {
+  public void clearVertexMessages(I vertexId) {
     getPartitionMap(vertexId).remove(vertexId);
   }
 
   @Override
-  public void clearAll() throws IOException {
+  public void clearAll() {
     map.clear();
   }
 
@@ -221,15 +232,15 @@ public class IdByteArrayMessageStore<I extends WritableComparable,
   public void writePartition(DataOutput out, int partitionId)
     throws IOException {
     Basic2ObjectMap<I, DataInputOutput> partitionMap = map.get(partitionId);
-    partitionMap.write(out, dataInputOutputWriter);
+    partitionMap.write(out);
   }
 
   @Override
   public void readFieldsForPartition(DataInput in, int partitionId)
     throws IOException {
     Basic2ObjectMap<I, DataInputOutput> partitionMap =
-        idTypeOps.create2ObjectOpenHashMap(10);
-    partitionMap.readFields(in, dataInputOutputWriter);
+        idTypeOps.create2ObjectOpenHashMap(dataInputOutputWriter);
+    partitionMap.readFields(in);
     synchronized (map) {
       map.put(partitionId, partitionMap);
     }

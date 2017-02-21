@@ -22,8 +22,8 @@ package org.apache.giraph.comm.requests;
  * Type of the request
  */
 public enum RequestType {
-  /*if[HADOOP_NON_SECURE]
-  else[HADOOP_NON_SECURE]*/
+/*if[HADOOP_NON_SECURE]
+else[HADOOP_NON_SECURE]*/
   /** Exchange authentication information between clients and servers */
   SASL_TOKEN_MESSAGE_REQUEST(SaslTokenMessageRequest.class),
   /**
@@ -31,7 +31,7 @@ public enum RequestType {
    * client, so client can modify its pipeline afterwards.
    */
   SASL_COMPLETE_REQUEST(SaslCompleteRequest.class),
-  /*end[HADOOP_NON_SECURE]*/
+/*end[HADOOP_NON_SECURE]*/
   /** Sending vertices request */
   SEND_VERTEX_REQUEST(SendVertexRequest.class),
   /** Sending vertices request */
@@ -60,7 +60,17 @@ public enum RequestType {
   /** Send aggregators from worker owner to other workers */
   SEND_AGGREGATORS_TO_WORKER_REQUEST(SendAggregatorsToWorkerRequest.class),
   /** Send message from worker to worker */
-  SEND_WORKER_TO_WORKER_MESSAGE_REQUEST(SendWorkerToWorkerMessageRequest.class);
+  SEND_WORKER_TO_WORKER_MESSAGE_REQUEST(SendWorkerToWorkerMessageRequest.class),
+  /** Send request for input split from worker to master */
+  ASK_FOR_INPUT_SPLIT_REQUEST(AskForInputSplitRequest.class),
+  /** Send request with granted input split from master to workers */
+  REPLY_WITH_INPUT_SPLIT_REQUEST(ReplyWithInputSplitRequest.class),
+  /** Send request to resume sending messages (used in flow-control) */
+  SEND_RESUME_REQUEST(SendResumeRequest.class),
+  /** Send addresses and partitions assignments from master to workers */
+  ADDRESSES_AND_PARTITIONS_REQUEST(AddressesAndPartitionsRequest.class),
+  /** Send partition stats from worker to master */
+  PARTITION_STATS_REQUEST(PartitionStatsRequest.class);
 
   /** Class of request which this type corresponds to */
   private final Class<? extends WritableRequest> requestClass;

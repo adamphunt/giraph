@@ -18,23 +18,37 @@
 
 package org.apache.giraph.job;
 
-import org.apache.giraph.worker.WorkerProgress;
-
 import com.google.common.collect.Iterables;
-
-import java.text.DecimalFormat;
+import org.apache.giraph.conf.FloatConfOption;
+import org.apache.giraph.worker.WorkerProgress;
+import org.apache.giraph.worker.WorkerProgressStats;
+import org.apache.hadoop.conf.Configuration;
 
 import javax.annotation.concurrent.NotThreadSafe;
+import java.text.DecimalFormat;
 
 /**
  * Class which combines multiple workers' progresses to get overall
  * application progress
  */
 @NotThreadSafe
-public class CombinedWorkerProgress extends WorkerProgress {
+public class CombinedWorkerProgress extends WorkerProgressStats {
   /** Decimal format which rounds numbers to two decimal places */
   public static final DecimalFormat DECIMAL_FORMAT = new DecimalFormat("#.##");
+  /**
+   * If free memory fraction on some worker goes below this value,
+   * warning will be printed
+   */
+  public static final FloatConfOption NORMAL_FREE_MEMORY_FRACTION =
+      new FloatConfOption("giraph.normalFreeMemoryFraction", 0.1f,
+          "If free memory fraction on some worker goes below this value, " +
+              "warning will be printed");
 
+  /**
+   * If free memory fraction on some worker goes below this value,
+   * warning will be printed
+   */
+  private double normalFreeMemoryFraction;
   /**
    * How many workers have reported that they are in highest reported
    * superstep
@@ -48,13 +62,25 @@ public class CombinedWorkerProgress extends WorkerProgress {
   private double minFreeMemoryMB = Double.MAX_VALUE;
   /** Name of the worker with min free memory */
   private int workerWithMinFreeMemory;
+  /** Minimum fraction of free memory on a worker */
+  private double minFreeMemoryFraction = Double.MAX_VALUE;
+  /**
+   * Minimum percentage of graph in memory in any worker so far in the
+   * computation
+   */
+  private int minGraphPercentageInMemory = 100;
+  /** Id of the worker with min percentage of graph in memory */
+  private int workerWithMinGraphPercentageInMemory = -1;
 
   /**
    * Constructor
    *
    * @param workerProgresses Worker progresses to combine
+   * @param conf Configuration
    */
-  public CombinedWorkerProgress(Iterable<WorkerProgress> workerProgresses) {
+  public CombinedWorkerProgress(Iterable<WorkerProgress> workerProgresses,
+      Configuration conf) {
+    normalFreeMemoryFraction = NORMAL_FREE_MEMORY_FRACTION.get(conf);
     for (WorkerProgress workerProgress : workerProgresses) {
       if (workerProgress.getCurrentSuperstep() > currentSuperstep) {
         verticesToCompute = 0;
@@ -94,7 +120,14 @@ public class CombinedWorkerProgress extends WorkerProgress {
         minFreeMemoryMB = workerProgress.getFreeMemoryMB();
         workerWithMinFreeMemory = workerProgress.getTaskId();
       }
+      minFreeMemoryFraction = Math.min(minFreeMemoryFraction,
+          workerProgress.getFreeMemoryFraction());
       freeMemoryMB += workerProgress.getFreeMemoryMB();
+      int percentage = workerProgress.getLowestGraphPercentageInMemory();
+      if (percentage < minGraphPercentageInMemory) {
+        minGraphPercentageInMemory = percentage;
+        workerWithMinGraphPercentageInMemory = workerProgress.getTaskId();
+      }
     }
     if (!Iterables.isEmpty(workerProgresses)) {
       freeMemoryMB /= Iterables.size(workerProgresses);
@@ -140,6 +173,15 @@ public class CombinedWorkerProgress extends WorkerProgress {
         workerWithMinFreeMemory).append(" - ").append(
         DECIMAL_FORMAT.format(minFreeMemoryMB)).append("MB, average ").append(
         DECIMAL_FORMAT.format(freeMemoryMB)).append("MB");
+    if (minFreeMemoryFraction < normalFreeMemoryFraction) {
+      sb.append(", ******* YOUR JOB IS RUNNING LOW ON MEMORY *******");
+    }
+    if (minGraphPercentageInMemory < 100) {
+      sb.append(" Spilling ")
+          .append(100 - minGraphPercentageInMemory)
+          .append("% of data to external storage on worker ")
+          .append(workerWithMinGraphPercentageInMemory);
+    }
     return sb.toString();
   }
 }

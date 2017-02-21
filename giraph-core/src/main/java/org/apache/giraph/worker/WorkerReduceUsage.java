@@ -17,6 +17,8 @@
  */
 package org.apache.giraph.worker;
 
+import org.apache.hadoop.io.Writable;
+
 /**
  * Methods on worker can provide values to reduce through this interface
  */
@@ -27,4 +29,11 @@ public interface WorkerReduceUsage {
    * @param value Single value to reduce
    */
   void reduce(String name, Object value);
+
+  /**
+   * Reduce given partial value.
+   * @param name Name of the reducer
+   * @param value Single value to reduce
+   */
+  void reduceMerge(String name, Writable value);
 }

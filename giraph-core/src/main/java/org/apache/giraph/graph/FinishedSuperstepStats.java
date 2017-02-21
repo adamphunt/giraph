@@ -17,7 +17,7 @@
  */
 package org.apache.giraph.graph;
 
-import org.apache.giraph.bsp.CheckpointStatus;
+import org.apache.giraph.bsp.checkpoints.CheckpointStatus;
 
 /**
  * Immutable graph stats after the completion of a superstep
@@ -51,7 +51,7 @@ public class FinishedSuperstepStats extends VertexEdgeCount {
                                 long numEdges,
                                 boolean mustLoadCheckpoint,
                                 CheckpointStatus checkpointStatus) {
-    super(numVertices, numEdges);
+    super(numVertices, numEdges, 0);
     this.localVertexCount = numLocalVertices;
     this.allVerticesHalted = allVerticesHalted;
     this.mustLoadCheckpoint = mustLoadCheckpoint;

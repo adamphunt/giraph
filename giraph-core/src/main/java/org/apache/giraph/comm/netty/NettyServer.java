@@ -18,13 +18,14 @@
 
 package org.apache.giraph.comm.netty;
 
+import org.apache.giraph.comm.flow_control.FlowControl;
 /*if_not[HADOOP_NON_SECURE]*/
 import org.apache.giraph.comm.netty.handler.AuthorizeServerHandler;
 /*end[HADOOP_NON_SECURE]*/
 import org.apache.giraph.comm.netty.handler.RequestDecoder;
 import org.apache.giraph.comm.netty.handler.RequestServerHandler;
-import org.apache.giraph.comm.netty.handler.ResponseEncoder;
 /*if_not[HADOOP_NON_SECURE]*/
+import org.apache.giraph.comm.netty.handler.ResponseEncoder;
 import org.apache.giraph.comm.netty.handler.SaslServerHandler;
 /*end[HADOOP_NON_SECURE]*/
 import org.apache.giraph.comm.netty.handler.WorkerRequestReservedMap;
@@ -49,7 +50,9 @@ import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
+/*if_not[HADOOP_NON_SECURE]*/
 import io.netty.util.AttributeKey;
+/*end[HADOOP_NON_SECURE]*/
 import io.netty.util.concurrent.DefaultEventExecutorGroup;
 import io.netty.util.concurrent.EventExecutorGroup;
 import io.netty.util.concurrent.ImmediateEventExecutor;
@@ -58,6 +61,7 @@ import io.netty.channel.AdaptiveRecvByteBufAllocator;
 import java.net.InetSocketAddress;
 import java.net.UnknownHostException;
 
+import static com.google.common.base.Preconditions.checkState;
 import static org.apache.giraph.conf.GiraphConstants.MAX_IPC_PORT_BIND_ATTEMPTS;
 
 /**
@@ -84,7 +88,7 @@ public class NettyServer {
   private final ChannelGroup accepted = new DefaultChannelGroup(
       ImmediateEventExecutor.INSTANCE);
   /** Local hostname */
-  private final String localHostname;
+  private final String localHostOrIp;
   /** Address of the server */
   private InetSocketAddress myAddress;
   /** Current task info */
@@ -140,9 +144,9 @@ public class NettyServer {
     this.conf = conf;
     this.progressable = progressable;
     this.requestServerHandlerFactory = requestServerHandlerFactory;
-    /*if_not[HADOOP_NON_SECURE]*/
+/*if_not[HADOOP_NON_SECURE]*/
     this.saslServerHandlerFactory = new SaslServerHandler.Factory();
-    /*end[HADOOP_NON_SECURE]*/
+/*end[HADOOP_NON_SECURE]*/
     this.myTaskInfo = myTaskInfo;
     this.exceptionHandler = exceptionHandler;
     sendBufferSize = GiraphConstants.SERVER_SEND_BUFFER_SIZE.get(conf);
@@ -161,7 +165,7 @@ public class NettyServer {
             "netty-server-worker-%d", exceptionHandler));
 
     try {
-      this.localHostname = conf.getLocalHostname();
+      this.localHostOrIp = conf.getLocalHostOrIp();
     } catch (UnknownHostException e) {
       throw new IllegalStateException("NettyServer: unable to get hostname");
     }
@@ -342,7 +346,7 @@ public class NettyServer {
     // Round up the max number of workers to the next power of 10 and use
     // it as a constant to increase the port number with.
     while (bindAttempts < maxIpcPortBindAttempts) {
-      this.myAddress = new InetSocketAddress(localHostname, bindPort);
+      this.myAddress = new InetSocketAddress(localHostOrIp, bindPort);
       if (failFirstPortBindingAttempt && bindAttempts == 0) {
         if (LOG.isInfoEnabled()) {
           LOG.info("start: Intentionally fail first " +
@@ -412,5 +416,18 @@ public class NettyServer {
     return myAddress;
   }
 
+  public String getLocalHostOrIp() {
+    return localHostOrIp;
+  }
+
+  /**
+   * Inform the server about the flow control policy used in sending requests
+   *
+   * @param flowControl reference to the flow control used
+   */
+  public void setFlowControl(FlowControl flowControl) {
+    checkState(requestServerHandlerFactory != null);
+    requestServerHandlerFactory.setFlowControl(flowControl);
+  }
 }
 

@@ -18,7 +18,12 @@
 
 package org.apache.giraph.comm.netty;
 
-import org.apache.giraph.comm.netty.handler.AddressRequestIdGenerator;
+import org.apache.giraph.comm.flow_control.CreditBasedFlowControl;
+import org.apache.giraph.comm.flow_control.FlowControl;
+import org.apache.giraph.comm.flow_control.NoOpFlowControl;
+import org.apache.giraph.comm.flow_control.StaticFlowControl;
+import org.apache.giraph.comm.netty.handler.AckSignalFlag;
+import org.apache.giraph.comm.netty.handler.TaskRequestIdGenerator;
 import org.apache.giraph.comm.netty.handler.ClientRequestId;
 import org.apache.giraph.comm.netty.handler.RequestEncoder;
 import org.apache.giraph.comm.netty.handler.RequestInfo;
@@ -30,9 +35,12 @@ import org.apache.giraph.comm.requests.RequestType;
 import org.apache.giraph.comm.requests.SaslTokenMessageRequest;
 /*end[HADOOP_NON_SECURE]*/
 import org.apache.giraph.comm.requests.WritableRequest;
+import org.apache.giraph.conf.BooleanConfOption;
 import org.apache.giraph.conf.GiraphConstants;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
+import org.apache.giraph.function.Predicate;
 import org.apache.giraph.graph.TaskInfo;
+import org.apache.giraph.master.MasterInfo;
 import org.apache.giraph.utils.PipelineUtils;
 import org.apache.giraph.utils.ProgressableUtils;
 import org.apache.giraph.utils.ThreadUtils;
@@ -44,7 +52,9 @@ import com.google.common.collect.Lists;
 import com.google.common.collect.MapMaker;
 import com.google.common.collect.Maps;
 
+/*if_not[HADOOP_NON_SECURE]*/
 import java.io.IOException;
+/*end[HADOOP_NON_SECURE]*/
 import java.net.InetSocketAddress;
 import java.util.Collection;
 import java.util.Collections;
@@ -66,11 +76,14 @@ import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.codec.FixedLengthFrameDecoder;
+/*if_not[HADOOP_NON_SECURE]*/
 import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
 import io.netty.util.AttributeKey;
+/*end[HADOOP_NON_SECURE]*/
 import io.netty.util.concurrent.DefaultEventExecutorGroup;
 import io.netty.util.concurrent.EventExecutorGroup;
 
+import static com.google.common.base.Preconditions.checkState;
 import static org.apache.giraph.conf.GiraphConstants.CLIENT_RECEIVE_BUFFER_SIZE;
 import static org.apache.giraph.conf.GiraphConstants.CLIENT_SEND_BUFFER_SIZE;
 import static org.apache.giraph.conf.GiraphConstants.MAX_REQUEST_MILLISECONDS;
@@ -79,6 +92,7 @@ import static org.apache.giraph.conf.GiraphConstants.NETTY_CLIENT_EXECUTION_AFTE
 import static org.apache.giraph.conf.GiraphConstants.NETTY_CLIENT_EXECUTION_THREADS;
 import static org.apache.giraph.conf.GiraphConstants.NETTY_CLIENT_USE_EXECUTION_HANDLER;
 import static org.apache.giraph.conf.GiraphConstants.NETTY_MAX_CONNECTION_FAILURES;
+import static org.apache.giraph.conf.GiraphConstants.WAIT_TIME_BETWEEN_CONNECTION_RETRIES_MS;
 import static org.apache.giraph.conf.GiraphConstants.WAITING_REQUEST_MSECS;
 
 /**
@@ -86,15 +100,22 @@ import static org.apache.giraph.conf.GiraphConstants.WAITING_REQUEST_MSECS;
  */
 public class NettyClient {
   /** Do we have a limit on number of open requests we can have */
-  public static final String LIMIT_NUMBER_OF_OPEN_REQUESTS =
-      "giraph.waitForRequestsConfirmation";
-  /** Default choice about having a limit on number of open requests */
-  public static final boolean LIMIT_NUMBER_OF_OPEN_REQUESTS_DEFAULT = false;
-  /** Maximum number of requests without confirmation we should have */
-  public static final String MAX_NUMBER_OF_OPEN_REQUESTS =
-      "giraph.maxNumberOfOpenRequests";
-  /** Default maximum number of requests without confirmation */
-  public static final int MAX_NUMBER_OF_OPEN_REQUESTS_DEFAULT = 10000;
+  public static final BooleanConfOption LIMIT_NUMBER_OF_OPEN_REQUESTS =
+      new BooleanConfOption("giraph.waitForRequestsConfirmation", false,
+          "Whether to have a limit on number of open requests or not");
+  /**
+   * Do we have a limit on number of open requests we can have for each worker.
+   * Note that if this option is enabled, Netty will not keep more than a
+   * certain number of requests open for each other worker in the job. If there
+   * are more requests generated for a worker, Netty will not actually send the
+   * surplus requests, instead, it caches the requests in a local buffer. The
+   * maximum number of these unsent requests in the cache is another
+   * user-defined parameter (MAX_NUM_OF_OPEN_REQUESTS_PER_WORKER).
+   */
+  public static final BooleanConfOption LIMIT_OPEN_REQUESTS_PER_WORKER =
+      new BooleanConfOption("giraph.waitForPerWorkerRequests", false,
+          "Whether to have a limit on number of open requests for each worker" +
+              "or not");
   /** Maximum number of requests to list (for debugging) */
   public static final int MAX_REQUESTS_TO_LIST = 10;
   /**
@@ -143,23 +164,23 @@ public class NettyClient {
   private final int sendBufferSize;
   /** Receive buffer size */
   private final int receiveBufferSize;
-  /** Do we have a limit on number of open requests */
-  private final boolean limitNumberOfOpenRequests;
-  /** Maximum number of requests without confirmation we can have */
-  private final int maxNumberOfOpenRequests;
+  /** Warn if request size is bigger than the buffer size by this factor */
+  private final float requestSizeWarningThreshold;
   /** Maximum number of connection failures */
   private final int maxConnectionFailures;
+  /** How long to wait before trying to reconnect failed connections */
+  private final long waitTimeBetweenConnectionRetriesMs;
   /** Maximum number of milliseconds for a request */
   private final int maxRequestMilliseconds;
-  /** Waiting internal for checking outstanding requests msecs */
+  /** Waiting interval for checking outstanding requests msecs */
   private final int waitingRequestMsecs;
   /** Timed logger for printing request debugging */
-  private final TimedLogger requestLogger = new TimedLogger(15 * 1000, LOG);
+  private final TimedLogger requestLogger;
   /** Worker executor group */
   private final EventLoopGroup workerGroup;
-  /** Address request id generator */
-  private final AddressRequestIdGenerator addressRequestIdGenerator =
-      new AddressRequestIdGenerator();
+  /** Task request id generator */
+  private final TaskRequestIdGenerator taskRequestIdGenerator =
+      new TaskRequestIdGenerator();
   /** Task info */
   private final TaskInfo myTaskInfo;
   /** Maximum thread pool size */
@@ -181,6 +202,8 @@ public class NettyClient {
    */
   private final LogOnErrorChannelFutureListener logErrorListener =
       new LogOnErrorChannelFutureListener();
+  /** Flow control policy used */
+  private final FlowControl flowControl;
 
   /**
    * Only constructor
@@ -200,30 +223,31 @@ public class NettyClient {
     this.channelsPerServer = GiraphConstants.CHANNELS_PER_SERVER.get(conf);
     sendBufferSize = CLIENT_SEND_BUFFER_SIZE.get(conf);
     receiveBufferSize = CLIENT_RECEIVE_BUFFER_SIZE.get(conf);
+    this.requestSizeWarningThreshold =
+        GiraphConstants.REQUEST_SIZE_WARNING_THRESHOLD.get(conf);
 
-    limitNumberOfOpenRequests = conf.getBoolean(
-        LIMIT_NUMBER_OF_OPEN_REQUESTS,
-        LIMIT_NUMBER_OF_OPEN_REQUESTS_DEFAULT);
+    boolean limitNumberOfOpenRequests = LIMIT_NUMBER_OF_OPEN_REQUESTS.get(conf);
+    boolean limitOpenRequestsPerWorker =
+        LIMIT_OPEN_REQUESTS_PER_WORKER.get(conf);
+    checkState(!limitNumberOfOpenRequests || !limitOpenRequestsPerWorker,
+        "NettyClient: it is not allowed to have both limitations on the " +
+            "number of total open requests, and on the number of open " +
+            "requests per worker!");
     if (limitNumberOfOpenRequests) {
-      maxNumberOfOpenRequests = conf.getInt(
-          MAX_NUMBER_OF_OPEN_REQUESTS,
-          MAX_NUMBER_OF_OPEN_REQUESTS_DEFAULT);
-      if (LOG.isInfoEnabled()) {
-        LOG.info("NettyClient: Limit number of open requests to " +
-            maxNumberOfOpenRequests);
-      }
+      flowControl = new StaticFlowControl(conf, this);
+    } else if (limitOpenRequestsPerWorker) {
+      flowControl = new CreditBasedFlowControl(conf, this);
     } else {
-      maxNumberOfOpenRequests = -1;
+      flowControl = new NoOpFlowControl(this);
     }
 
     maxRequestMilliseconds = MAX_REQUEST_MILLISECONDS.get(conf);
-
     maxConnectionFailures = NETTY_MAX_CONNECTION_FAILURES.get(conf);
-
+    waitTimeBetweenConnectionRetriesMs =
+        WAIT_TIME_BETWEEN_CONNECTION_RETRIES_MS.get(conf);
     waitingRequestMsecs = WAITING_REQUEST_MSECS.get(conf);
-
+    requestLogger = new TimedLogger(waitingRequestMsecs, LOG);
     maxPoolSize = GiraphConstants.NETTY_CLIENT_THREADS.get(conf);
-
     maxResolveAddressAttempts = MAX_RESOLVE_ADDRESS_ATTEMPTS.get(conf);
 
     clientRequestIdRequestInfoMap =
@@ -263,7 +287,7 @@ public class NettyClient {
         .handler(new ChannelInitializer<SocketChannel>() {
           @Override
           protected void initChannel(SocketChannel ch) throws Exception {
-      /*if_not[HADOOP_NON_SECURE]*/
+/*if_not[HADOOP_NON_SECURE]*/
             if (conf.authenticate()) {
               LOG.info("Using Netty with authentication.");
 
@@ -313,8 +337,8 @@ public class NettyClient {
                   new SaslClientHandler(conf), handlerToUseExecutionGroup,
                   executionGroup, ch);
               PipelineUtils.addLastWithExecutorCheck("response-handler",
-                  new ResponseClientHandler(clientRequestIdRequestInfoMap,
-                      conf), handlerToUseExecutionGroup, executionGroup, ch);
+                  new ResponseClientHandler(NettyClient.this, conf),
+                  handlerToUseExecutionGroup, executionGroup, ch);
             } else {
               LOG.info("Using Netty without authentication.");
 /*end[HADOOP_NON_SECURE]*/
@@ -344,14 +368,25 @@ public class NettyClient {
                     new RequestEncoder(conf), handlerToUseExecutionGroup,
                   executionGroup, ch);
               PipelineUtils.addLastWithExecutorCheck("response-handler",
-                    new ResponseClientHandler(clientRequestIdRequestInfoMap,
-                        conf), handlerToUseExecutionGroup, executionGroup, ch);
+                  new ResponseClientHandler(NettyClient.this, conf),
+                  handlerToUseExecutionGroup, executionGroup, ch);
 
 /*if_not[HADOOP_NON_SECURE]*/
             }
 /*end[HADOOP_NON_SECURE]*/
           }
         });
+  }
+
+  /**
+   * Whether master task is involved in the communication with a given client
+   *
+   * @param clientId id of the communication (on the end of the communication)
+   * @return true if master is on one end of the communication
+   */
+  public boolean masterInvolved(int clientId) {
+    return myTaskInfo.getTaskId() == MasterInfo.MASTER_TASK_ID ||
+        clientId == MasterInfo.MASTER_TASK_ID;
   }
 
   /**
@@ -396,13 +431,14 @@ public class NettyClient {
         Lists.newArrayListWithCapacity(tasks.size() * channelsPerServer);
     for (TaskInfo taskInfo : tasks) {
       context.progress();
-      InetSocketAddress address = taskIdAddressMap.get(taskInfo.getTaskId());
+      int taskId = taskInfo.getTaskId();
+      InetSocketAddress address = taskIdAddressMap.get(taskId);
       if (address == null ||
           !address.getHostName().equals(taskInfo.getHostname()) ||
           address.getPort() != taskInfo.getPort()) {
         address = resolveAddress(maxResolveAddressAttempts,
-            taskInfo.getInetSocketAddress());
-        taskIdAddressMap.put(taskInfo.getTaskId(), address);
+            taskInfo.getHostOrIp(), taskInfo.getPort());
+        taskIdAddressMap.put(taskId, address);
       }
       if (address == null || address.getHostName() == null ||
           address.getHostName().isEmpty()) {
@@ -424,7 +460,7 @@ public class NettyClient {
 
         waitingConnectionList.add(
             new ChannelFutureAddress(
-                connectionFuture, address, taskInfo.getTaskId()));
+                connectionFuture, address, taskId));
       }
     }
 
@@ -433,11 +469,24 @@ public class NettyClient {
     int connected = 0;
     while (failures < maxConnectionFailures) {
       List<ChannelFutureAddress> nextCheckFutures = Lists.newArrayList();
+      boolean isFirstFailure = true;
       for (ChannelFutureAddress waitingConnection : waitingConnectionList) {
         context.progress();
         ChannelFuture future = waitingConnection.future;
         ProgressableUtils.awaitChannelFuture(future, context);
-        if (!future.isSuccess()) {
+        if (!future.isSuccess() || !future.channel().isOpen()) {
+          // Make a short pause before trying to reconnect failed addresses
+          // again, but to do it just once per iterating through channels
+          if (isFirstFailure) {
+            isFirstFailure = false;
+            try {
+              Thread.sleep(waitTimeBetweenConnectionRetriesMs);
+            } catch (InterruptedException e) {
+              throw new IllegalStateException(
+                  "connectAllAddresses: InterruptedException occurred", e);
+            }
+          }
+
           LOG.warn("connectAllAddresses: Future failed " +
               "to connect with " + waitingConnection.address + " with " +
               failures + " failures because of " + future.cause());
@@ -574,6 +623,7 @@ public class NettyClient {
     if (LOG.isInfoEnabled()) {
       LOG.info("stop: Halting netty client");
     }
+    flowControl.shutdown();
     // Close connections asynchronously, in a Netty-approved
     // way, without cleaning up thread pools until all channels
     // in addressChannelMap are closed (success or failure)
@@ -668,19 +718,31 @@ public class NettyClient {
   }
 
   /**
-   * Send a request to a remote server (should be already connected)
+   * Send a request to a remote server honoring the flow control mechanism
+   * (should be already connected)
    *
    * @param destTaskId Destination task id
    * @param request Request to send
    */
-  public void sendWritableRequest(Integer destTaskId,
-      WritableRequest request) {
+  public void sendWritableRequest(int destTaskId, WritableRequest request) {
+    flowControl.sendRequest(destTaskId, request);
+  }
+
+  /**
+   * Actual send of a request.
+   *
+   * @param destTaskId destination to send the request to
+   * @param request request itself
+   * @return request id generated for sending the request
+   */
+  public Long doSend(int destTaskId, WritableRequest request) {
     InetSocketAddress remoteServer = taskIdAddressMap.get(destTaskId);
     if (clientRequestIdRequestInfoMap.isEmpty()) {
       inboundByteCounter.resetAll();
       outboundByteCounter.resetAll();
     }
     boolean registerRequest = true;
+    Long requestId = null;
 /*if_not[HADOOP_NON_SECURE]*/
     if (request.getType() == RequestType.SASL_TOKEN_MESSAGE_REQUEST) {
       registerRequest = false;
@@ -691,8 +753,8 @@ public class NettyClient {
     RequestInfo newRequestInfo = new RequestInfo(remoteServer, request);
     if (registerRequest) {
       request.setClientId(myTaskInfo.getTaskId());
-      request.setRequestId(
-        addressRequestIdGenerator.getNextRequestId(remoteServer));
+      requestId = taskRequestIdGenerator.getNextRequestId(destTaskId);
+      request.setRequestId(requestId);
       ClientRequestId clientRequestId =
         new ClientRequestId(destTaskId, request.getRequestId());
       RequestInfo oldRequestInfo = clientRequestIdRequestInfoMap.putIfAbsent(
@@ -703,23 +765,84 @@ public class NettyClient {
           "request info of " + oldRequestInfo);
       }
     }
+    if (request.getSerializedSize() >
+        requestSizeWarningThreshold * sendBufferSize) {
+      LOG.warn("Creating large request of type " + request.getClass() +
+        ", size " + request.getSerializedSize() +
+        " bytes. Check netty buffer size.");
+    }
     ChannelFuture writeFuture = channel.write(request);
     newRequestInfo.setWriteFuture(writeFuture);
     writeFuture.addListener(logErrorListener);
+    return requestId;
+  }
 
-    if (limitNumberOfOpenRequests &&
-        clientRequestIdRequestInfoMap.size() > maxNumberOfOpenRequests) {
-      waitSomeRequests(maxNumberOfOpenRequests);
+  /**
+   * Handle receipt of a message. Called by response handler.
+   *
+   * @param senderId Id of sender of the message
+   * @param requestId Id of the request
+   * @param response Actual response
+   * @param shouldDrop Drop the message?
+   */
+  public void messageReceived(int senderId, long requestId, int response,
+      boolean shouldDrop) {
+    if (shouldDrop) {
+      synchronized (clientRequestIdRequestInfoMap) {
+        clientRequestIdRequestInfoMap.notifyAll();
+      }
+      return;
+    }
+    AckSignalFlag responseFlag = flowControl.getAckSignalFlag(response);
+    if (responseFlag == AckSignalFlag.DUPLICATE_REQUEST) {
+      LOG.info("messageReceived: Already completed request (taskId = " +
+          senderId + ", requestId = " + requestId + ")");
+    } else if (responseFlag != AckSignalFlag.NEW_REQUEST) {
+      throw new IllegalStateException(
+          "messageReceived: Got illegal response " + response);
+    }
+    RequestInfo requestInfo = clientRequestIdRequestInfoMap
+        .remove(new ClientRequestId(senderId, requestId));
+    if (requestInfo == null) {
+      LOG.info("messageReceived: Already received response for (taskId = " +
+          senderId + ", requestId = " + requestId + ")");
+    } else {
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("messageReceived: Completed (taskId = " + senderId + ")" +
+            requestInfo + ".  Waiting on " +
+            clientRequestIdRequestInfoMap.size() + " requests");
+      }
+      flowControl.messageAckReceived(senderId, requestId, response);
+      // Help #waitAllRequests() to finish faster
+      synchronized (clientRequestIdRequestInfoMap) {
+        clientRequestIdRequestInfoMap.notifyAll();
+      }
     }
   }
 
   /**
-   * Ensure all the request sent so far are complete.
-   *
-   * @throws InterruptedException
+   * Ensure all the request sent so far are complete. Periodically check the
+   * state of current open requests. If there is an issue in any of them,
+   * re-send the request.
    */
   public void waitAllRequests() {
-    waitSomeRequests(0);
+    flowControl.waitAllRequests();
+    checkState(flowControl.getNumberOfUnsentRequests() == 0);
+    while (clientRequestIdRequestInfoMap.size() > 0) {
+      // Wait for requests to complete for some time
+      synchronized (clientRequestIdRequestInfoMap) {
+        if (clientRequestIdRequestInfoMap.size() == 0) {
+          break;
+        }
+        try {
+          clientRequestIdRequestInfoMap.wait(waitingRequestMsecs);
+        } catch (InterruptedException e) {
+          throw new IllegalStateException("waitAllRequests: Got unexpected " +
+              "InterruptedException", e);
+        }
+      }
+      logAndSanityCheck();
+    }
     if (LOG.isInfoEnabled()) {
       LOG.info("waitAllRequests: Finished all requests. " +
           inboundByteCounter.getMetrics() + "\n" + outboundByteCounter
@@ -728,46 +851,24 @@ public class NettyClient {
   }
 
   /**
-   * Ensure that at most maxOpenRequests are not complete.  Periodically,
-   * check the state of every request.  If we find the connection failed,
-   * re-establish it and re-send the request.
-   *
-   * @param maxOpenRequests Maximum number of requests which can be not
-   *                        complete
+   * Log information about the requests and check for problems in requests
    */
-  private void waitSomeRequests(int maxOpenRequests) {
-    while (clientRequestIdRequestInfoMap.size() > maxOpenRequests) {
-      // Wait for requests to complete for some time
-      logInfoAboutOpenRequests(maxOpenRequests);
-      synchronized (clientRequestIdRequestInfoMap) {
-        if (clientRequestIdRequestInfoMap.size() <= maxOpenRequests) {
-          break;
-        }
-        try {
-          clientRequestIdRequestInfoMap.wait(waitingRequestMsecs);
-        } catch (InterruptedException e) {
-          LOG.error("waitSomeRequests: Got unexpected InterruptedException", e);
-        }
-      }
-      // Make sure that waiting doesn't kill the job
-      context.progress();
-
-      checkRequestsForProblems();
-    }
+  public void logAndSanityCheck() {
+    logInfoAboutOpenRequests();
+    // Make sure that waiting doesn't kill the job
+    context.progress();
+    checkRequestsForProblems();
   }
 
   /**
    * Log the status of open requests.
-   *
-   * @param maxOpenRequests Maximum number of requests which can be not complete
    */
-  private void logInfoAboutOpenRequests(int maxOpenRequests) {
+  private void logInfoAboutOpenRequests() {
     if (LOG.isInfoEnabled() && requestLogger.isPrintable()) {
       LOG.info("logInfoAboutOpenRequests: Waiting interval of " +
           waitingRequestMsecs + " msecs, " +
           clientRequestIdRequestInfoMap.size() +
-          " open requests, waiting for it to be <= " + maxOpenRequests +
-          ", " + inboundByteCounter.getMetrics() + "\n" +
+          " open requests, " + inboundByteCounter.getMetrics() + "\n" +
           outboundByteCounter.getMetrics());
 
       if (clientRequestIdRequestInfoMap.size() < MAX_REQUESTS_TO_LIST) {
@@ -811,6 +912,7 @@ public class NettyClient {
             .append(", ");
       }
       LOG.info(message);
+      flowControl.logInfo();
     }
   }
 
@@ -829,6 +931,29 @@ public class NettyClient {
         System.currentTimeMillis())) {
       return;
     }
+    resendRequestsWhenNeeded(new Predicate<RequestInfo>() {
+      @Override
+      public boolean apply(RequestInfo requestInfo) {
+        ChannelFuture writeFuture = requestInfo.getWriteFuture();
+        // If not connected anymore, request failed, or the request is taking
+        // too long, re-establish and resend
+        return !writeFuture.channel().isActive() ||
+          (writeFuture.isDone() && !writeFuture.isSuccess()) ||
+          (requestInfo.getElapsedMsecs() > maxRequestMilliseconds);
+      }
+    });
+  }
+
+  /**
+   * Resend requests which satisfy predicate
+   *
+   * @param shouldResendRequestPredicate Predicate to use to check whether
+   *                                     request should be resent
+   */
+  private void resendRequestsWhenNeeded(
+      Predicate<RequestInfo> shouldResendRequestPredicate) {
+    // Check if there are open requests which have been sent a long time ago,
+    // and if so, resend them.
     List<ClientRequestId> addedRequestIds = Lists.newArrayList();
     List<RequestInfo> addedRequestInfos = Lists.newArrayList();
     // Check all the requests for problems
@@ -840,11 +965,8 @@ public class NettyClient {
       if (writeFuture == null) {
         continue;
       }
-      // If not connected anymore, request failed, or the request is taking
-      // too long, re-establish and resend
-      if (!writeFuture.channel().isActive() ||
-          (writeFuture.isDone() && !writeFuture.isSuccess()) ||
-          (requestInfo.getElapsedMsecs() > maxRequestMilliseconds)) {
+      // If request should be resent
+      if (shouldResendRequestPredicate.apply(requestInfo)) {
         LOG.warn("checkRequestsForProblems: Problem with request id " +
             entry.getKey() + " connected = " +
             writeFuture.channel().isActive() +
@@ -865,8 +987,7 @@ public class NettyClient {
       ClientRequestId requestId = addedRequestIds.get(i);
       RequestInfo requestInfo = addedRequestInfos.get(i);
 
-      if (clientRequestIdRequestInfoMap.put(requestId, requestInfo) ==
-          null) {
+      if (clientRequestIdRequestInfoMap.put(requestId, requestInfo) == null) {
         LOG.warn("checkRequestsForProblems: Request " + requestId +
             " completed prior to sending the next request");
         clientRequestIdRequestInfoMap.remove(requestId);
@@ -889,14 +1010,16 @@ public class NettyClient {
    *
    * @param maxResolveAddressAttempts Maximum number of attempts to resolve the
    *        address
-   * @param address The address we are attempting to resolve
+   * @param hostOrIp Known IP or host name
+   * @param port Target port number
    * @return The successfully resolved address.
    * @throws IllegalStateException if the address is not resolved
    *         in <code>maxResolveAddressAttempts</code> tries.
    */
   private static InetSocketAddress resolveAddress(
-      int maxResolveAddressAttempts, InetSocketAddress address) {
+      int maxResolveAddressAttempts, String hostOrIp, int port) {
     int resolveAttempts = 0;
+    InetSocketAddress address = new InetSocketAddress(hostOrIp, port);
     while (address.isUnresolved() &&
         resolveAttempts < maxResolveAddressAttempts) {
       ++resolveAttempts;
@@ -908,7 +1031,7 @@ public class NettyClient {
       } catch (InterruptedException e) {
         LOG.warn("resolveAddress: Interrupted.", e);
       }
-      address = new InetSocketAddress(address.getHostName(),
+      address = new InetSocketAddress(hostOrIp,
           address.getPort());
     }
     if (resolveAttempts >= maxResolveAddressAttempts) {
@@ -918,17 +1041,53 @@ public class NettyClient {
     return address;
   }
 
+  public FlowControl getFlowControl() {
+    return flowControl;
+  }
+
+  /**
+   * Generate and get the next request id to be used for a given worker
+   *
+   * @param taskId id of the worker to generate the next request id
+   * @return request id
+   */
+  public Long getNextRequestId(int taskId) {
+    return taskRequestIdGenerator.getNextRequestId(taskId);
+  }
+
+  /**
+   * @return number of open requests
+   */
+  public int getNumberOfOpenRequests() {
+    return clientRequestIdRequestInfoMap.size();
+  }
+
+  /**
+   * Resend requests related to channel which failed
+   *
+   * @param future ChannelFuture of the failed channel
+   */
+  private void checkRequestsAfterChannelFailure(final ChannelFuture future) {
+    resendRequestsWhenNeeded(new Predicate<RequestInfo>() {
+      @Override
+      public boolean apply(RequestInfo requestInfo) {
+        return requestInfo.getWriteFuture() == future;
+      }
+    });
+  }
+
   /**
    * This listener class just dumps exception stack traces if
    * something happens.
    */
-  private static class LogOnErrorChannelFutureListener
+  private class LogOnErrorChannelFutureListener
       implements ChannelFutureListener {
 
     @Override
     public void operationComplete(ChannelFuture future) throws Exception {
       if (future.isDone() && !future.isSuccess()) {
         LOG.error("Request failed", future.cause());
+        checkRequestsAfterChannelFailure(future);
       }
     }
   }

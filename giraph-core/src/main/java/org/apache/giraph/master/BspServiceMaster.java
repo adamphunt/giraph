@@ -21,14 +21,8 @@ package org.apache.giraph.master;
 import static org.apache.giraph.conf.GiraphConstants.INPUT_SPLIT_SAMPLE_PERCENT;
 import static org.apache.giraph.conf.GiraphConstants.KEEP_ZOOKEEPER_DATA;
 import static org.apache.giraph.conf.GiraphConstants.PARTITION_LONG_TAIL_MIN_PRINT;
-import static org.apache.giraph.conf.GiraphConstants.USE_INPUT_SPLIT_LOCALITY;
-import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
-import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 
-import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
-import java.io.DataOutput;
-import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.charset.Charset;
@@ -40,9 +34,6 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
-import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 import net.iharder.Base64;
@@ -52,12 +43,15 @@ import org.apache.giraph.bsp.ApplicationState;
 import org.apache.giraph.bsp.BspInputFormat;
 import org.apache.giraph.bsp.BspService;
 import org.apache.giraph.bsp.CentralizedServiceMaster;
-import org.apache.giraph.bsp.CheckpointStatus;
 import org.apache.giraph.bsp.SuperstepState;
+import org.apache.giraph.bsp.checkpoints.CheckpointStatus;
+import org.apache.giraph.bsp.checkpoints.CheckpointSupportedChecker;
 import org.apache.giraph.comm.MasterClient;
 import org.apache.giraph.comm.MasterServer;
 import org.apache.giraph.comm.netty.NettyMasterClient;
 import org.apache.giraph.comm.netty.NettyMasterServer;
+import org.apache.giraph.comm.requests.AddressesAndPartitionsRequest;
+import org.apache.giraph.conf.GiraphConfiguration;
 import org.apache.giraph.conf.GiraphConstants;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
 import org.apache.giraph.counters.GiraphStats;
@@ -66,12 +60,12 @@ import org.apache.giraph.graph.GlobalStats;
 import org.apache.giraph.graph.GraphFunctions;
 import org.apache.giraph.graph.GraphState;
 import org.apache.giraph.graph.GraphTaskManager;
-import org.apache.giraph.graph.InputSplitEvents;
-import org.apache.giraph.graph.InputSplitPaths;
 import org.apache.giraph.io.EdgeInputFormat;
 import org.apache.giraph.io.GiraphInputFormat;
 import org.apache.giraph.io.MappingInputFormat;
 import org.apache.giraph.io.VertexInputFormat;
+import org.apache.giraph.io.InputType;
+import org.apache.giraph.master.input.MasterInputSplitsHandler;
 import org.apache.giraph.metrics.AggregatedMetrics;
 import org.apache.giraph.metrics.GiraphMetrics;
 import org.apache.giraph.metrics.GiraphTimer;
@@ -88,9 +82,8 @@ import org.apache.giraph.time.SystemTime;
 import org.apache.giraph.time.Time;
 import org.apache.giraph.utils.CheckpointingUtils;
 import org.apache.giraph.utils.JMapHistoDumper;
-import org.apache.giraph.utils.LogStacktraceCallable;
-import org.apache.giraph.utils.ProgressableUtils;
 import org.apache.giraph.utils.ReactiveJMapHistoDumper;
+import org.apache.giraph.utils.ReflectionUtils;
 import org.apache.giraph.utils.WritableUtils;
 import org.apache.giraph.worker.WorkerInfo;
 import org.apache.giraph.zk.BspEvent;
@@ -98,7 +91,6 @@ import org.apache.giraph.zk.PredicateLock;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.io.Text;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableComparable;
 import org.apache.hadoop.mapred.JobID;
@@ -169,7 +161,7 @@ public class BspServiceMaster<I extends WritableComparable,
   private final List<PartitionStats> allPartitionStatsList =
       new ArrayList<PartitionStats>();
   /** Handler for global communication */
-  private MasterAggregatorHandler globalCommHandler;
+  private MasterGlobalCommHandler globalCommHandler;
   /** Handler for aggregators to reduce/broadcast translation */
   private AggregatorToGlobalCommTranslation aggregatorTranslation;
   /** Master class */
@@ -195,6 +187,8 @@ public class BspServiceMaster<I extends WritableComparable,
   private final int checkpointFrequency;
   /** Current checkpoint status */
   private CheckpointStatus checkpointStatus;
+  /** Checks if checkpointing supported */
+  private final CheckpointSupportedChecker checkpointSupportedChecker;
 
   /**
    * Constructor for setting up the master.
@@ -233,6 +227,9 @@ public class BspServiceMaster<I extends WritableComparable,
 
     this.checkpointFrequency = conf.getCheckpointFrequency();
     this.checkpointStatus = CheckpointStatus.NONE;
+    this.checkpointSupportedChecker =
+        ReflectionUtils.newInstance(
+            GiraphConstants.CHECKPOINT_SUPPORTED_CHECKER.get(conf));
 
     GiraphMetrics.get().addSuperstepResetObserver(this);
     GiraphStats.init(context);
@@ -325,7 +322,7 @@ public class BspServiceMaster<I extends WritableComparable,
    */
   private List<InputSplit> generateInputSplits(GiraphInputFormat inputFormat,
                                                int minSplitCountHint,
-                                               String inputSplitType) {
+                                               InputType inputSplitType) {
     String logPrefix = "generate" + inputSplitType + "InputSplits";
     List<InputSplit> splits;
     try {
@@ -413,9 +410,14 @@ public class BspServiceMaster<I extends WritableComparable,
     }
     for (String workerInfoPath : workerInfoPathList) {
       WorkerInfo workerInfo = new WorkerInfo();
-      WritableUtils.readFieldsFromZnode(
-          getZkExt(), workerInfoPath, true, null, workerInfo);
-      workerInfoList.add(workerInfo);
+      try {
+        WritableUtils.readFieldsFromZnode(
+            getZkExt(), workerInfoPath, true, null, workerInfo);
+        workerInfoList.add(workerInfo);
+      } catch (IllegalStateException e) {
+        LOG.warn("Can't get info from worker, did it die in between? " +
+            "workerInfoPath=" + workerInfoPath, e);
+      }
     }
     return workerInfoList;
   }
@@ -593,46 +595,25 @@ public class BspServiceMaster<I extends WritableComparable,
    * Common method for creating vertex/edge input splits.
    *
    * @param inputFormat The vertex/edge input format
-   * @param inputSplitPaths ZooKeeper input split paths
    * @param inputSplitType Type of input split (for logging purposes)
    * @return Number of splits. Returns -1 on failure to create
    *         valid input splits.
    */
   private int createInputSplits(GiraphInputFormat inputFormat,
-                                InputSplitPaths inputSplitPaths,
-                                String inputSplitType) {
+                                InputType inputSplitType) {
     ImmutableClassesGiraphConfiguration conf = getConfiguration();
     String logPrefix = "create" + inputSplitType + "InputSplits";
     // Only the 'master' should be doing this.  Wait until the number of
     // processes that have reported health exceeds the minimum percentage.
     // If the minimum percentage is not met, fail the job.  Otherwise
     // generate the input splits
-    String inputSplitsPath = inputSplitPaths.getPath();
-    try {
-      if (getZkExt().exists(inputSplitsPath, false) != null) {
-        LOG.info(inputSplitsPath + " already exists, no need to create");
-        return Integer.parseInt(
-            new String(getZkExt().getData(inputSplitsPath, false, null),
-                Charset.defaultCharset()));
-      }
-    } catch (KeeperException.NoNodeException e) {
-      if (LOG.isInfoEnabled()) {
-        LOG.info(logPrefix + ": Need to create the input splits at " +
-            inputSplitsPath);
-      }
-    } catch (KeeperException e) {
-      throw new IllegalStateException(logPrefix + ": KeeperException", e);
-    } catch (InterruptedException e) {
-      throw new IllegalStateException(logPrefix + ": InterruptedException", e);
-    }
-
-    // When creating znodes, in case the master has already run, resume
-    // where it left off.
     List<WorkerInfo> healthyWorkerInfoList = checkWorkers();
     if (healthyWorkerInfoList == null) {
       setJobStateFailed("Not enough healthy workers to create input splits");
       return -1;
     }
+    globalCommHandler.getInputSplitsHandler().initialize(masterClient,
+        healthyWorkerInfoList);
 
     // Create at least as many splits as the total number of input threads.
     int minSplitCountHint = healthyWorkerInfoList.size() *
@@ -648,8 +629,9 @@ public class BspServiceMaster<I extends WritableComparable,
           "check input of " + inputFormat.getClass().getName() + "!");
       getContext().setStatus("Failing job due to 0 input splits, " +
           "check input of " + inputFormat.getClass().getName() + "!");
-      setJobStateFailed("Please check your input tables - partitions which " +
-          "you specified are missing. Failing the job!!!");
+      setJobStateFailed("******* PLEASE CHECK YOUR INPUT TABLES - PARTITIONS " +
+          "WHICH YOU SPECIFIED ARE MISSING (for " + inputSplitType +
+          " input). FAILING THE JOB *******");
     }
     if (minSplitCountHint > splitList.size()) {
       LOG.warn(logPrefix + ": Number of inputSplits=" +
@@ -659,43 +641,8 @@ public class BspServiceMaster<I extends WritableComparable,
           "some threads will be not used");
     }
 
-    // Write input splits to zookeeper in parallel
-    int inputSplitThreadCount = conf.getInt(NUM_MASTER_ZK_INPUT_SPLIT_THREADS,
-        DEFAULT_INPUT_SPLIT_THREAD_COUNT);
-    if (LOG.isInfoEnabled()) {
-      LOG.info(logPrefix + ": Starting to write input split data " +
-          "to zookeeper with " + inputSplitThreadCount + " threads");
-    }
-    ExecutorService taskExecutor =
-        Executors.newFixedThreadPool(inputSplitThreadCount);
-    boolean writeLocations = USE_INPUT_SPLIT_LOCALITY.get(conf);
-    for (int i = 0; i < splitList.size(); ++i) {
-      InputSplit inputSplit = splitList.get(i);
-      taskExecutor.submit(new LogStacktraceCallable<Void>(
-          new WriteInputSplit(inputFormat, inputSplit, inputSplitsPath, i,
-              writeLocations)));
-    }
-    taskExecutor.shutdown();
-    ProgressableUtils.awaitExecutorTermination(taskExecutor, getContext());
-    if (LOG.isInfoEnabled()) {
-      LOG.info(logPrefix + ": Done writing input split data to zookeeper");
-    }
-
-    // Let workers know they can start trying to load the input splits
-    try {
-      getZkExt().createExt(inputSplitPaths.getAllReadyPath(),
-          null,
-          Ids.OPEN_ACL_UNSAFE,
-          CreateMode.PERSISTENT,
-          false);
-    } catch (KeeperException.NodeExistsException e) {
-      LOG.info(logPrefix + ": Node " +
-          inputSplitPaths.getAllReadyPath() + " already exists.");
-    } catch (KeeperException e) {
-      throw new IllegalStateException(logPrefix + ": KeeperException", e);
-    } catch (InterruptedException e) {
-      throw new IllegalStateException(logPrefix + ": IllegalStateException", e);
-    }
+    globalCommHandler.getInputSplitsHandler().addSplits(inputSplitType,
+        splitList, inputFormat);
 
     return splitList.size();
   }
@@ -707,8 +654,7 @@ public class BspServiceMaster<I extends WritableComparable,
     }
     MappingInputFormat<I, V, E, ? extends Writable> mappingInputFormat =
       getConfiguration().createWrappedMappingInputFormat();
-    return createInputSplits(mappingInputFormat, mappingInputSplitsPaths,
-      "Mapping");
+    return createInputSplits(mappingInputFormat, InputType.MAPPING);
   }
 
   @Override
@@ -719,8 +665,7 @@ public class BspServiceMaster<I extends WritableComparable,
     }
     VertexInputFormat<I, V, E> vertexInputFormat =
         getConfiguration().createWrappedVertexInputFormat();
-    return createInputSplits(vertexInputFormat, vertexInputSplitsPaths,
-        "Vertex");
+    return createInputSplits(vertexInputFormat, InputType.VERTEX);
   }
 
   @Override
@@ -731,8 +676,7 @@ public class BspServiceMaster<I extends WritableComparable,
     }
     EdgeInputFormat<I, E> edgeInputFormat =
         getConfiguration().createWrappedEdgeInputFormat();
-    return createInputSplits(edgeInputFormat, edgeInputSplitsPaths,
-        "Edge");
+    return createInputSplits(edgeInputFormat, InputType.EDGE);
   }
 
   @Override
@@ -741,7 +685,7 @@ public class BspServiceMaster<I extends WritableComparable,
   }
 
   @Override
-  public MasterAggregatorHandler getGlobalCommHandler() {
+  public MasterGlobalCommHandler getGlobalCommHandler() {
     return globalCommHandler;
   }
 
@@ -780,16 +724,12 @@ public class BspServiceMaster<I extends WritableComparable,
     GlobalStats globalStats = new GlobalStats();
     globalStats.readFields(finalizedStream);
     updateCounters(globalStats);
-    SuperstepClasses superstepClasses = new SuperstepClasses();
+    SuperstepClasses superstepClasses =
+        SuperstepClasses.createToRead(getConfiguration());
     superstepClasses.readFields(finalizedStream);
     getConfiguration().updateSuperstepClasses(superstepClasses);
     int prefixFileCount = finalizedStream.readInt();
 
-
-    Int2ObjectMap<WorkerInfo> workersMap = new Int2ObjectOpenHashMap<>();
-    for (WorkerInfo worker : chosenWorkerInfoList) {
-      workersMap.put(worker.getTaskId(), worker);
-    }
     String checkpointFile =
         finalizedStream.readUTF();
     for (int i = 0; i < prefixFileCount; ++i) {
@@ -798,7 +738,7 @@ public class BspServiceMaster<I extends WritableComparable,
       DataInputStream metadataStream = fs.open(new Path(checkpointFile +
           "." + mrTaskId + CheckpointingUtils.CHECKPOINT_METADATA_POSTFIX));
       long partitions = metadataStream.readInt();
-      WorkerInfo worker = workersMap.get(mrTaskId);
+      WorkerInfo worker = getWorkerInfoById(mrTaskId);
       for (long p = 0; p < partitions; ++p) {
         int partitionId = metadataStream.readInt();
         PartitionOwner partitionOwner = new BasicPartitionOwner(partitionId,
@@ -819,7 +759,7 @@ public class BspServiceMaster<I extends WritableComparable,
     });
 
 
-    globalCommHandler.readFields(finalizedStream);
+    globalCommHandler.getAggregatorHandler().readFields(finalizedStream);
     aggregatorTranslation.readFields(finalizedStream);
     masterCompute.readFields(finalizedStream);
     finalizedStream.close();
@@ -892,12 +832,15 @@ public class BspServiceMaster<I extends WritableComparable,
         if (masterChildArr.get(0).equals(myBid)) {
           GiraphStats.getInstance().getCurrentMasterTaskPartition().
               setValue(getTaskPartition());
-          globalCommHandler = new MasterAggregatorHandler(
-              getConfiguration(), getContext());
+
+          globalCommHandler = new MasterGlobalCommHandler(
+              new MasterAggregatorHandler(getConfiguration(), getContext()),
+              new MasterInputSplitsHandler(
+                  getConfiguration().useInputSplitLocality()));
           aggregatorTranslation = new AggregatorToGlobalCommTranslation(
               getConfiguration(), globalCommHandler);
 
-          globalCommHandler.initialize(this);
+          globalCommHandler.getAggregatorHandler().initialize(this);
           masterCompute = getConfiguration().createMasterCompute();
           masterCompute.setMasterService(this);
 
@@ -905,11 +848,13 @@ public class BspServiceMaster<I extends WritableComparable,
           masterServer =
               new NettyMasterServer(getConfiguration(), this, getContext(),
                   getGraphTaskManager().createUncaughtExceptionHandler());
-          masterInfo.setInetSocketAddress(masterServer.getMyAddress());
+          masterInfo.setInetSocketAddress(masterServer.getMyAddress(),
+              masterServer.getLocalHostOrIp());
           masterInfo.setTaskId(getTaskPartition());
           masterClient =
               new NettyMasterClient(getContext(), getConfiguration(), this,
                   getGraphTaskManager().createUncaughtExceptionHandler());
+          masterServer.setFlowControl(masterClient.getFlowControl());
 
           if (LOG.isInfoEnabled()) {
             LOG.info("becomeMaster: I am now the master!");
@@ -944,8 +889,6 @@ public class BspServiceMaster<I extends WritableComparable,
   private GlobalStats aggregateWorkerStats(long superstep) {
     ImmutableClassesGiraphConfiguration conf = getConfiguration();
 
-    Class<? extends PartitionStats> partitionStatsClass =
-        masterGraphPartitioner.createPartitionStats().getClass();
     GlobalStats globalStats = new GlobalStats();
     // Get the stats from the all the worker selected nodes
     String workerFinishedPath =
@@ -965,7 +908,6 @@ public class BspServiceMaster<I extends WritableComparable,
 
     AggregatedMetrics aggregatedMetrics = new AggregatedMetrics();
 
-    allPartitionStatsList.clear();
     for (String finishedPath : workerFinishedPathList) {
       String hostnamePartitionId = FilenameUtils.getName(finishedPath);
       JSONObject workerFinishedInfoObj = null;
@@ -974,16 +916,6 @@ public class BspServiceMaster<I extends WritableComparable,
             getZkExt().getData(finishedPath, false, null);
         workerFinishedInfoObj = new JSONObject(new String(zkData,
             Charset.defaultCharset()));
-        List<PartitionStats> statsList =
-            WritableUtils.readListFieldsFromByteArray(
-                Base64.decode(workerFinishedInfoObj.getString(
-                    JSONOBJ_PARTITION_STATS_KEY)),
-                    partitionStatsClass,
-                    conf);
-        for (PartitionStats partitionStats : statsList) {
-          globalStats.addPartitionStats(partitionStats);
-          allPartitionStatsList.add(partitionStats);
-        }
         globalStats.addMessageCount(
             workerFinishedInfoObj.getLong(
                 JSONOBJ_NUM_MESSAGES_KEY));
@@ -998,6 +930,16 @@ public class BspServiceMaster<I extends WritableComparable,
                   workerFinishedInfoObj.getString(
                       JSONOBJ_METRICS_KEY)),
               workerMetrics);
+          globalStats.addOocLoadBytesCount(
+              workerMetrics.getBytesLoadedFromDisk());
+          globalStats.addOocStoreBytesCount(
+              workerMetrics.getBytesStoredOnDisk());
+          // Find the lowest percentage of graph in memory across all workers
+          // for one superstep
+          globalStats.setLowestGraphPercentageInMemory(
+              Math.min(globalStats.getLowestGraphPercentageInMemory(),
+                  (int) Math.round(
+                      workerMetrics.getGraphPercentageInMemory())));
           aggregatedMetrics.add(workerMetrics, hostnamePartitionId);
         }
       } catch (JSONException e) {
@@ -1013,6 +955,14 @@ public class BspServiceMaster<I extends WritableComparable,
         throw new IllegalStateException(
             "aggregateWorkerStats: IOException", e);
       }
+    }
+
+    allPartitionStatsList.clear();
+    Iterable<PartitionStats> statsList = globalCommHandler.getAllPartitionStats(
+        workerFinishedPathList.size(), getContext());
+    for (PartitionStats partitionStats : statsList) {
+      globalStats.addPartitionStats(partitionStats);
+      allPartitionStatsList.add(partitionStats);
     }
 
     if (conf.metricsEnabled()) {
@@ -1107,9 +1057,9 @@ public class BspServiceMaster<I extends WritableComparable,
     finalizedOutputStream.writeInt(chosenWorkerInfoList.size());
     finalizedOutputStream.writeUTF(getCheckpointBasePath(superstep));
     for (WorkerInfo chosenWorkerInfo : chosenWorkerInfoList) {
-      finalizedOutputStream.writeInt(chosenWorkerInfo.getTaskId());
+      finalizedOutputStream.writeInt(getWorkerId(chosenWorkerInfo));
     }
-    globalCommHandler.write(finalizedOutputStream);
+    globalCommHandler.getAggregatorHandler().write(finalizedOutputStream);
     aggregatorTranslation.write(finalizedOutputStream);
     masterCompute.write(finalizedOutputStream);
     finalizedOutputStream.close();
@@ -1187,18 +1137,16 @@ public class BspServiceMaster<I extends WritableComparable,
       }
     }
 
-    // Workers are waiting for these assignments
     AddressesAndPartitionsWritable addressesAndPartitions =
         new AddressesAndPartitionsWritable(masterInfo, chosenWorkerInfoList,
             partitionOwners);
-    String addressesAndPartitionsPath =
-        getAddressesAndPartitionsPath(getApplicationAttempt(),
-            getSuperstep());
-    WritableUtils.writeToZnode(
-        getZkExt(),
-        addressesAndPartitionsPath,
-        -1,
-        addressesAndPartitions);
+    // Send assignments to every worker
+    // TODO for very large number of partitions we might want to split this
+    // across multiple requests
+    for (WorkerInfo workerInfo : chosenWorkerInfoList) {
+      masterClient.sendWritableRequest(workerInfo.getTaskId(),
+          new AddressesAndPartitionsRequest(addressesAndPartitions));
+    }
   }
 
   /**
@@ -1246,12 +1194,8 @@ public class BspServiceMaster<I extends WritableComparable,
   @Override
   public void restartFromCheckpoint(long checkpoint) {
     // Process:
-    // 1. Remove all old input split data
-    // 2. Increase the application attempt and set to the correct checkpoint
-    // 3. Send command to all workers to restart their tasks
-    zkDeleteNode(vertexInputSplitsPaths.getPath());
-    zkDeleteNode(edgeInputSplitsPaths.getPath());
-
+    // 1. Increase the application attempt and set to the correct checkpoint
+    // 2. Send command to all workers to restart their tasks
     setApplicationAttempt(getApplicationAttempt() + 1);
     setCachedSuperstep(checkpoint);
     setRestartedSuperstep(checkpoint);
@@ -1336,41 +1280,47 @@ public class BspServiceMaster<I extends WritableComparable,
     }
     String workerInfoHealthyPath =
         getWorkerInfoHealthyPath(getApplicationAttempt(), getSuperstep());
-    List<String> finishedHostnameIdList;
+    List<String> finishedHostnameIdList = new ArrayList<>();
     long nextInfoMillis = System.currentTimeMillis();
     final int defaultTaskTimeoutMsec = 10 * 60 * 1000;  // from TaskTracker
+    final int waitBetweenLogInfoMsec = 30 * 1000;
     final int taskTimeoutMsec = getContext().getConfiguration().getInt(
-        "mapred.task.timeout", defaultTaskTimeoutMsec);
+        "mapred.task.timeout", defaultTaskTimeoutMsec) / 2;
+    long lastRegularRunTimeMsec = 0;
+    int eventLoopTimeout =  Math.min(taskTimeoutMsec, waitBetweenLogInfoMsec);
+    boolean logInfoOnlyRun = false;
     List<WorkerInfo> deadWorkers = new ArrayList<>();
     while (true) {
-      try {
-        finishedHostnameIdList =
-            getZkExt().getChildrenExt(finishedWorkerPath,
-                true,
-                false,
-                false);
-      } catch (KeeperException e) {
-        throw new IllegalStateException(
-            "barrierOnWorkerList: KeeperException - Couldn't get " +
-                "children of " + finishedWorkerPath, e);
-      } catch (InterruptedException e) {
-        throw new IllegalStateException(
-            "barrierOnWorkerList: IllegalException - Couldn't get " +
-                "children of " + finishedWorkerPath, e);
-      }
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("barrierOnWorkerList: Got finished worker list = " +
-            finishedHostnameIdList + ", size = " +
-            finishedHostnameIdList.size() +
-            ", worker list = " +
-            workerInfoList + ", size = " +
-            workerInfoList.size() +
-            " from " + finishedWorkerPath);
+      if (! logInfoOnlyRun) {
+        try {
+          finishedHostnameIdList =
+              getZkExt().getChildrenExt(finishedWorkerPath,
+                                        true,
+                                        false,
+                                        false);
+        } catch (KeeperException e) {
+          throw new IllegalStateException(
+              "barrierOnWorkerList: KeeperException - Couldn't get " +
+                  "children of " + finishedWorkerPath, e);
+        } catch (InterruptedException e) {
+          throw new IllegalStateException(
+              "barrierOnWorkerList: IllegalException - Couldn't get " +
+                  "children of " + finishedWorkerPath, e);
+        }
+        if (LOG.isDebugEnabled()) {
+          LOG.debug("barrierOnWorkerList: Got finished worker list = " +
+                        finishedHostnameIdList + ", size = " +
+                        finishedHostnameIdList.size() +
+                        ", worker list = " +
+                        workerInfoList + ", size = " +
+                        workerInfoList.size() +
+                        " from " + finishedWorkerPath);
+        }
       }
 
       if (LOG.isInfoEnabled() &&
           (System.currentTimeMillis() > nextInfoMillis)) {
-        nextInfoMillis = System.currentTimeMillis() + 30000;
+        nextInfoMillis = System.currentTimeMillis() + waitBetweenLogInfoMsec;
         LOG.info("barrierOnWorkerList: " +
             finishedHostnameIdList.size() +
             " out of " + workerInfoList.size() +
@@ -1383,28 +1333,46 @@ public class BspServiceMaster<I extends WritableComparable,
           LOG.info("barrierOnWorkerList: Waiting on " + remainingWorkers);
         }
       }
-      getContext().setStatus(getGraphTaskManager().getGraphFunctions() + " - " +
-          finishedHostnameIdList.size() +
-          " finished out of " +
-          workerInfoList.size() +
-          " on superstep " + getSuperstep());
-      if (finishedHostnameIdList.containsAll(hostnameIdList)) {
-        break;
-      }
 
-      for (WorkerInfo deadWorker : deadWorkers) {
-        if (!finishedHostnameIdList.contains(deadWorker.getHostnameId())) {
-          LOG.error("barrierOnWorkerList: no results arived from " +
-              "worker that was pronounced dead: " + deadWorker +
-              " on superstep " + getSuperstep());
-          return false;
+      if (! logInfoOnlyRun) {
+        getContext().setStatus(getGraphTaskManager().getGraphFunctions() +
+                                   " - " +
+                                   finishedHostnameIdList.size() +
+                                   " finished out of " +
+                                   workerInfoList.size() +
+                                   " on superstep " + getSuperstep());
+        if (finishedHostnameIdList.containsAll(hostnameIdList)) {
+          break;
         }
+
+        for (WorkerInfo deadWorker : deadWorkers) {
+          if (!finishedHostnameIdList.contains(deadWorker.getHostnameId())) {
+            LOG.error("barrierOnWorkerList: no results arived from " +
+                          "worker that was pronounced dead: " + deadWorker +
+                          " on superstep " + getSuperstep());
+            return false;
+          }
+        }
+
+        // wall-clock time skew is ignored
+        lastRegularRunTimeMsec = System.currentTimeMillis();
       }
 
       // Wait for a signal or timeout
-      event.waitMsecs(taskTimeoutMsec / 2);
+      boolean eventTriggered = event.waitMsecs(eventLoopTimeout);
+      long elapsedTimeSinceRegularRunMsec = System.currentTimeMillis() -
+          lastRegularRunTimeMsec;
       event.reset();
       getContext().progress();
+
+      if (eventTriggered ||
+          taskTimeoutMsec == eventLoopTimeout ||
+          elapsedTimeSinceRegularRunMsec >= taskTimeoutMsec) {
+        logInfoOnlyRun = false;
+      } else {
+        logInfoOnlyRun = true;
+        continue;
+      }
 
       // Did a worker die?
       try {
@@ -1412,9 +1380,18 @@ public class BspServiceMaster<I extends WritableComparable,
                 workerInfoHealthyPath,
                 workerInfoList));
         if (!ignoreDeath && deadWorkers.size() > 0) {
-          LOG.error("barrierOnWorkerList: Missing chosen " +
-              "workers " + deadWorkers +
-              " on superstep " + getSuperstep());
+          String errorMessage = "******* WORKERS " + deadWorkers +
+              " FAILED *******";
+          // If checkpointing is not used, we should fail the job
+          if (!getConfiguration().useCheckpointing()) {
+            setJobStateFailed(errorMessage);
+          } else {
+            LOG.error("barrierOnWorkerList: Missing chosen " +
+                "workers " + deadWorkers +
+                " on superstep " + getSuperstep());
+            // Log worker failure to command line
+            getGraphTaskManager().getJobProgressTracker().logInfo(errorMessage);
+          }
           return false;
         }
       } catch (KeeperException e) {
@@ -1465,37 +1442,32 @@ public class BspServiceMaster<I extends WritableComparable,
 
   /**
    * Coordinate the exchange of vertex/edge input splits among workers.
-   *
-   * @param inputSplitPaths Input split paths
-   * @param inputSplitEvents Input split events
-   * @param inputSplitsType Type of input splits (for logging purposes)
    */
-  private void coordinateInputSplits(InputSplitPaths inputSplitPaths,
-                                     InputSplitEvents inputSplitEvents,
-                                     String inputSplitsType) {
+  private void coordinateInputSplits() {
     // Coordinate the workers finishing sending their vertices/edges to the
     // correct workers and signal when everything is done.
-    String logPrefix = "coordinate" + inputSplitsType + "InputSplits";
-    if (!barrierOnWorkerList(inputSplitPaths.getDonePath(),
+    if (!barrierOnWorkerList(inputSplitsWorkerDonePath,
         chosenWorkerInfoList,
-        inputSplitEvents.getDoneStateChanged(),
+        getInputSplitsWorkerDoneEvent(),
         false)) {
-      throw new IllegalStateException(logPrefix + ": Worker failed during " +
-          "input split (currently not supported)");
+      throw new IllegalStateException("coordinateInputSplits: Worker failed " +
+          "during input split (currently not supported)");
     }
     try {
-      getZkExt().createExt(inputSplitPaths.getAllDonePath(),
+      getZkExt().createExt(inputSplitsAllDonePath,
           null,
           Ids.OPEN_ACL_UNSAFE,
           CreateMode.PERSISTENT,
           false);
     } catch (KeeperException.NodeExistsException e) {
       LOG.info("coordinateInputSplits: Node " +
-          inputSplitPaths.getAllDonePath() + " already exists.");
+          inputSplitsAllDonePath + " already exists.");
     } catch (KeeperException e) {
-      throw new IllegalStateException(logPrefix + ": KeeperException", e);
+      throw new IllegalStateException(
+          "coordinateInputSplits: KeeperException", e);
     } catch (InterruptedException e) {
-      throw new IllegalStateException(logPrefix + ": IllegalStateException", e);
+      throw new IllegalStateException(
+          "coordinateInputSplits: IllegalStateException", e);
     }
   }
 
@@ -1515,7 +1487,7 @@ public class BspServiceMaster<I extends WritableComparable,
    */
   private void initializeAggregatorInputSuperstep()
     throws InterruptedException {
-    globalCommHandler.prepareSuperstep();
+    globalCommHandler.getAggregatorHandler().prepareSuperstep();
 
     prepareMasterCompute(getSuperstep());
     try {
@@ -1531,9 +1503,9 @@ public class BspServiceMaster<I extends WritableComparable,
         "initializeAggregatorInputSuperstep: Failed in access", e);
     }
     aggregatorTranslation.postMasterCompute();
-    globalCommHandler.finishSuperstep();
+    globalCommHandler.getAggregatorHandler().finishSuperstep();
 
-    globalCommHandler.sendDataToOwners(masterClient);
+    globalCommHandler.getAggregatorHandler().sendDataToOwners(masterClient);
   }
 
   /**
@@ -1549,7 +1521,7 @@ public class BspServiceMaster<I extends WritableComparable,
         GiraphStats.getInstance().getEdges().getValue(),
         getContext());
     SuperstepClasses superstepClasses =
-      new SuperstepClasses(getConfiguration());
+        SuperstepClasses.createAndExtractTypes(getConfiguration());
     masterCompute.setGraphState(graphState);
     masterCompute.setSuperstepClasses(superstepClasses);
     return superstepClasses;
@@ -1599,7 +1571,7 @@ public class BspServiceMaster<I extends WritableComparable,
     // We need to finalize aggregators from previous superstep
     if (getSuperstep() >= 0) {
       aggregatorTranslation.postMasterCompute();
-      globalCommHandler.finishSuperstep();
+      globalCommHandler.getAggregatorHandler().finishSuperstep();
     }
 
     masterClient.openConnections();
@@ -1635,25 +1607,13 @@ public class BspServiceMaster<I extends WritableComparable,
 
     // We need to send aggregators to worker owners after new worker assignments
     if (getSuperstep() >= 0) {
-      globalCommHandler.sendDataToOwners(masterClient);
+      globalCommHandler.getAggregatorHandler().sendDataToOwners(masterClient);
     }
 
     if (getSuperstep() == INPUT_SUPERSTEP) {
       // Initialize aggregators before coordinating
       initializeAggregatorInputSuperstep();
-      if (getConfiguration().hasMappingInputFormat()) {
-        coordinateInputSplits(mappingInputSplitsPaths, mappingInputSplitsEvents,
-            "Mapping");
-      }
-      // vertex loading and edge loading
-      if (getConfiguration().hasVertexInputFormat()) {
-        coordinateInputSplits(vertexInputSplitsPaths, vertexInputSplitsEvents,
-            "Vertex");
-      }
-      if (getConfiguration().hasEdgeInputFormat()) {
-        coordinateInputSplits(edgeInputSplitsPaths, edgeInputSplitsEvents,
-            "Edge");
-      }
+      coordinateInputSplits();
     }
 
     String finishedWorkerPath =
@@ -1667,7 +1627,7 @@ public class BspServiceMaster<I extends WritableComparable,
 
     // Collect aggregator values, then run the master.compute() and
     // finally save the aggregator values
-    globalCommHandler.prepareSuperstep();
+    globalCommHandler.getAggregatorHandler().prepareSuperstep();
     aggregatorTranslation.prepareSuperstep();
 
     SuperstepClasses superstepClasses =
@@ -1705,8 +1665,7 @@ public class BspServiceMaster<I extends WritableComparable,
     // match) and if the computation is halted, no need to check any of
     // the types.
     if (!globalStats.getHaltComputation()) {
-      superstepClasses.verifyTypesMatch(
-          getConfiguration(), getSuperstep() != 0);
+      superstepClasses.verifyTypesMatch(getSuperstep() > 0);
     }
     getConfiguration().updateSuperstepClasses(superstepClasses);
 
@@ -1734,7 +1693,8 @@ public class BspServiceMaster<I extends WritableComparable,
     } else {
       superstepState = SuperstepState.THIS_SUPERSTEP_DONE;
     }
-    globalCommHandler.writeAggregators(getSuperstep(), superstepState);
+    globalCommHandler.getAggregatorHandler().writeAggregators(
+        getSuperstep(), superstepState);
 
     return superstepState;
   }
@@ -1751,7 +1711,12 @@ public class BspServiceMaster<I extends WritableComparable,
     try {
       if (getZkExt().
           exists(basePath + FORCE_CHECKPOINT_USER_FLAG, false) != null) {
-        return CheckpointStatus.CHECKPOINT_AND_HALT;
+        if (isCheckpointingSupported(getConfiguration(), masterCompute)) {
+          return CheckpointStatus.CHECKPOINT_AND_HALT;
+        } else {
+          LOG.warn("Attempted to manually checkpoint the job that " +
+              "does not support checkpoints. Ignoring");
+        }
       }
     } catch (KeeperException e) {
       throw new IllegalStateException(
@@ -1771,10 +1736,28 @@ public class BspServiceMaster<I extends WritableComparable,
       return CheckpointStatus.NONE;
     }
     if (((superstep - firstCheckpoint) % checkpointFrequency) == 0) {
-      return CheckpointStatus.CHECKPOINT;
+      if (isCheckpointingSupported(getConfiguration(), masterCompute)) {
+        return CheckpointStatus.CHECKPOINT;
+      }
     }
     return CheckpointStatus.NONE;
   }
+
+  /**
+   * Returns false if job doesn't support checkpoints.
+   * Job may not support checkpointing if it does output during
+   * computation, uses static variables to keep data between supersteps,
+   * starts new threads etc.
+   * @param conf Immutable configuration of the job
+   * @param masterCompute instance of master compute
+   * @return true if it is safe to checkpoint the job
+   */
+  private boolean isCheckpointingSupported(
+      GiraphConfiguration conf, MasterCompute masterCompute) {
+    return checkpointSupportedChecker.isCheckpointSupported(
+        conf, masterCompute);
+  }
+
 
   /**
    * This doMasterCompute is only called
@@ -1959,7 +1942,7 @@ public class BspServiceMaster<I extends WritableComparable,
         failJob(new Exception("Checkpoint and halt requested. " +
             "Killing this job."));
       }
-      globalCommHandler.close();
+      globalCommHandler.getAggregatorHandler().close();
       masterClient.closeConnections();
       masterServer.close();
     }
@@ -2071,101 +2054,14 @@ public class BspServiceMaster<I extends WritableComparable,
     gs.getAggregateSentMessages().increment(globalStats.getMessageCount());
     gs.getAggregateSentMessageBytes()
       .increment(globalStats.getMessageBytesCount());
-  }
-
-  /**
-   * Task that writes a given input split to zookeeper.
-   * Upon failure call() throws an exception.
-   */
-  private class WriteInputSplit implements Callable<Void> {
-    /** Input format */
-    private final GiraphInputFormat inputFormat;
-    /** Input split which we are going to write */
-    private final InputSplit inputSplit;
-    /** Input splits path */
-    private final String inputSplitsPath;
-    /** Index of the input split */
-    private final int index;
-    /** Whether to write locality information */
-    private final boolean writeLocations;
-
-    /**
-     * Constructor
-     *
-     * @param inputFormat Input format
-     * @param inputSplit Input split which we are going to write
-     * @param inputSplitsPath Input splits path
-     * @param index Index of the input split
-     * @param writeLocations whether to write the input split's locations (to
-     *                       be used by workers for prioritizing local splits
-     *                       when reading)
-     */
-    public WriteInputSplit(GiraphInputFormat inputFormat,
-                           InputSplit inputSplit,
-                           String inputSplitsPath,
-                           int index,
-                           boolean writeLocations) {
-      this.inputFormat = inputFormat;
-      this.inputSplit = inputSplit;
-      this.inputSplitsPath = inputSplitsPath;
-      this.index = index;
-      this.writeLocations = writeLocations;
-    }
-
-    @Override
-    public Void call() {
-      String inputSplitPath = null;
-      try {
-        ByteArrayOutputStream byteArrayOutputStream =
-            new ByteArrayOutputStream();
-        DataOutput outputStream =
-            new DataOutputStream(byteArrayOutputStream);
-
-        if (writeLocations) {
-          String[] splitLocations = inputSplit.getLocations();
-          StringBuilder locations = null;
-          if (splitLocations != null) {
-            int splitListLength =
-                Math.min(splitLocations.length, localityLimit);
-            locations = new StringBuilder();
-            for (String location : splitLocations) {
-              locations.append(location)
-                  .append(--splitListLength > 0 ? "\t" : "");
-            }
-          }
-          Text.writeString(outputStream,
-              locations == null ? "" : locations.toString());
-        }
-
-        inputFormat.writeInputSplit(inputSplit, outputStream);
-        inputSplitPath = inputSplitsPath + "/" + index;
-        getZkExt().createExt(inputSplitPath,
-            byteArrayOutputStream.toByteArray(),
-            Ids.OPEN_ACL_UNSAFE,
-            CreateMode.PERSISTENT,
-            true);
-
-        if (LOG.isDebugEnabled()) {
-          LOG.debug("call: Created input split " +
-              "with index " + index + " serialized as " +
-              byteArrayOutputStream.toString(Charset.defaultCharset().name()));
-        }
-      } catch (KeeperException.NodeExistsException e) {
-        if (LOG.isInfoEnabled()) {
-          LOG.info("call: Node " +
-              inputSplitPath + " already exists.");
-        }
-      } catch (KeeperException e) {
-        throw new IllegalStateException(
-            "call: KeeperException", e);
-      } catch (InterruptedException e) {
-        throw new IllegalStateException(
-            "call: IllegalStateException", e);
-      } catch (IOException e) {
-        throw new IllegalStateException(
-            "call: IOException", e);
-      }
-      return null;
-    }
+    gs.getAggregateOOCBytesLoaded()
+      .increment(globalStats.getOocLoadBytesCount());
+    gs.getAggregateOOCBytesStored()
+      .increment(globalStats.getOocStoreBytesCount());
+    // Updating the lowest percentage of graph in memory throughout the
+    // execution across all the supersteps
+    int percentage = (int) gs.getLowestGraphPercentageInMemory().getValue();
+    gs.getLowestGraphPercentageInMemory().setValue(
+        Math.min(percentage, globalStats.getLowestGraphPercentageInMemory()));
   }
 }

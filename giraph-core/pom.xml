@@ -24,7 +24,7 @@ under the License.
   <parent>
     <groupId>org.apache.giraph</groupId>
     <artifactId>giraph-parent</artifactId>
-    <version>1.1.0</version>
+    <version>1.2.0-mapr</version>
   </parent>
   <artifactId>giraph-core</artifactId>
   <packaging>jar</packaging>
@@ -119,25 +119,21 @@ under the License.
         <artifactId>apache-rat-plugin</artifactId>
       </plugin>
       <plugin>
-        <artifactId>maven-antrun-plugin</artifactId>
-        <version>1.6</version>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>exec-maven-plugin</artifactId>
+        <version>1.5.0</version>
         <executions>
           <execution>
             <phase>compile</phase>
             <goals>
-              <goal>run</goal>
+              <goal>java</goal>
             </goals>
             <configuration>
-              <target>
-                <java classname="org.apache.giraph.conf.AllOptions">
-                  <classpath>
-                    <pathelement location="${project.jar}"/>
-                    <pathelement path="${maven.dependency.org.apache.hadoop.hadoop-common.jar.path}"/>
-                    <pathelement path="${maven.dependency.org.apache.hadoop.hadoop-core.jar.path}"/>
-                  </classpath>
-                  <arg value="${top.dir}/src/site/xdoc/options.xml" />
-                </java>
-              </target>
+              <mainClass>org.apache.giraph.conf.AllOptions</mainClass>
+              <arguments>
+                <argument>${top.dir}/src/site/xdoc/options.xml</argument>
+              </arguments>
+              <classpathScope>compile</classpathScope>
             </configuration>
           </execution>
         </executions>
@@ -145,7 +141,7 @@ under the License.
       <plugin>
         <groupId>org.codehaus.mojo</groupId>
         <artifactId>findbugs-maven-plugin</artifactId>
-        <version>2.5.1</version>
+        <version>3.0.0</version>
         <configuration>
           <xmlOutput>true</xmlOutput>
           <findbugsXmlOutput>false</findbugsXmlOutput>
@@ -503,6 +499,10 @@ under the License.
       <artifactId>commons-io</artifactId>
     </dependency>
     <dependency>
+      <groupId>org.apache.commons</groupId>
+      <artifactId>commons-lang3</artifactId>
+    </dependency>
+    <dependency>
       <groupId>log4j</groupId>
       <artifactId>log4j</artifactId>
     </dependency>
@@ -542,6 +542,18 @@ under the License.
       <groupId>org.python</groupId>
       <artifactId>jython</artifactId>
     </dependency>
+    <dependency>
+      <groupId>com.esotericsoftware</groupId>
+      <artifactId>kryo</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>de.javakaffee</groupId>
+      <artifactId>kryo-serializers</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.objenesis</groupId>
+      <artifactId>objenesis</artifactId>
+    </dependency>
 
     <!-- runtime dependency -->
     <dependency>
@@ -561,10 +573,11 @@ under the License.
       <artifactId>mockito-core</artifactId>
       <scope>test</scope>
     </dependency>
+
     <dependency>
-      <groupId>org.apache.hadoop</groupId>
-      <artifactId>hadoop-yarn-server-tests</artifactId>
-      <type>test-jar</type>
+      <groupId>org.freemarker</groupId>
+      <artifactId>freemarker</artifactId>
+      <version>2.3.23</version>
       <scope>test</scope>
     </dependency>
 

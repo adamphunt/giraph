@@ -42,7 +42,7 @@ import com.google.common.collect.Maps;
 
 /** Handler for reduce/broadcast on the master */
 public class MasterAggregatorHandler
-    implements MasterGlobalCommUsage, Writable {
+    implements MasterGlobalCommUsageAggregators, Writable {
   /** Class logger */
   private static final Logger LOG =
       Logger.getLogger(MasterAggregatorHandler.class);
@@ -80,13 +80,13 @@ public class MasterAggregatorHandler
   }
 
   @Override
-  public final <S, R extends Writable> void registerReduce(
+  public final <S, R extends Writable> void registerReducer(
       String name, ReduceOperation<S, R> reduceOp) {
-    registerReduce(name, reduceOp, reduceOp.createInitialValue());
+    registerReducer(name, reduceOp, reduceOp.createInitialValue());
   }
 
   @Override
-  public <S, R extends Writable> void registerReduce(
+  public <S, R extends Writable> void registerReducer(
       String name, ReduceOperation<S, R> reduceOp,
       R globalInitialValue) {
     if (reducerMap.containsKey(name)) {
@@ -243,7 +243,7 @@ public class MasterAggregatorHandler
       valueToReduce.readFields(reducedValuesInput);
 
       if (reducer.getCurrentValue() != null) {
-        reducer.reducePartial(valueToReduce);
+        reducer.reduceMerge(valueToReduce);
       } else {
         reducer.setCurrentValue(valueToReduce);
       }

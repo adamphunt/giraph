@@ -27,6 +27,7 @@ import org.apache.giraph.aggregators.Aggregator;
 import org.apache.giraph.comm.aggregators.AggregatorUtils;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
 import org.apache.giraph.utils.MasterLoggingAggregator;
+import org.apache.giraph.utils.WritableUtils;
 import org.apache.hadoop.io.Writable;
 import org.apache.log4j.Logger;
 
@@ -134,10 +135,10 @@ public class AggregatorToGlobalCommTranslation
       AggregatorReduceOperation<Writable> cleanReduceOp =
           entry.getValue().createReduceOp();
       if (entry.getValue().isPersistent()) {
-        globalComm.registerReduce(
+        globalComm.registerReducer(
             entry.getKey(), cleanReduceOp, value);
       } else {
-        globalComm.registerReduce(
+        globalComm.registerReducer(
             entry.getKey(), cleanReduceOp);
       }
       entry.getValue().setCurrentValue(null);
@@ -154,14 +155,16 @@ public class AggregatorToGlobalCommTranslation
   public <A extends Writable> boolean registerAggregator(String name,
       Class<? extends Aggregator<A>> aggregatorClass) throws
       InstantiationException, IllegalAccessException {
-    return registerAggregator(name, aggregatorClass, false) != null;
+    registerAggregator(name, aggregatorClass, false);
+    return true;
   }
 
   @Override
   public <A extends Writable> boolean registerPersistentAggregator(String name,
       Class<? extends Aggregator<A>> aggregatorClass) throws
       InstantiationException, IllegalAccessException {
-    return registerAggregator(name, aggregatorClass, true) != null;
+    registerAggregator(name, aggregatorClass, true);
+    return true;
   }
 
   @Override
@@ -284,7 +287,8 @@ public class AggregatorToGlobalCommTranslation
     @Override
     public void readFields(DataInput in) throws IOException {
       persistent = in.readBoolean();
-      reduceOp = new AggregatorReduceOperation<>();
+      reduceOp = WritableUtils.createWritable(
+          AggregatorReduceOperation.class, conf);
       reduceOp.readFields(in);
       currentValue = null;
     }

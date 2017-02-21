@@ -28,6 +28,7 @@ import org.apache.giraph.combiner.FloatSumMessageCombiner;
 import org.apache.giraph.comm.messages.primitives.IntByteArrayMessageStore;
 import org.apache.giraph.comm.messages.primitives.IntFloatMessageStore;
 import org.apache.giraph.conf.GiraphConfiguration;
+import org.apache.giraph.conf.GiraphConstants;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
 import org.apache.giraph.factories.TestMessageValueFactory;
 import org.apache.giraph.graph.BasicComputation;
@@ -52,9 +53,11 @@ public class TestIntFloatPrimitiveMessageStores {
   private static final int NUM_PARTITIONS = 2;
   private static CentralizedServiceWorker<IntWritable, Writable, Writable>
     service;
+  private static ImmutableClassesGiraphConfiguration<IntWritable, Writable,
+      Writable> conf;
 
   @Before
-  public void prepare() throws IOException {
+  public void prepare() {
     service = Mockito.mock(CentralizedServiceWorker.class);
     Mockito.when(
         service.getPartitionId(Mockito.any(IntWritable.class))).thenAnswer(
@@ -72,8 +75,12 @@ public class TestIntFloatPrimitiveMessageStores {
         Lists.newArrayList(0, 1));
     Partition partition = Mockito.mock(Partition.class);
     Mockito.when(partition.getVertexCount()).thenReturn(Long.valueOf(1));
-    Mockito.when(partitionStore.getOrCreatePartition(0)).thenReturn(partition);
-    Mockito.when(partitionStore.getOrCreatePartition(1)).thenReturn(partition);
+    Mockito.when(partitionStore.getNextPartition()).thenReturn(partition);
+    Mockito.when(partitionStore.getNextPartition()).thenReturn(partition);
+
+    GiraphConfiguration initConf = new GiraphConfiguration();
+    initConf.setComputationClass(IntFloatNoOpComputation.class);
+    conf = new ImmutableClassesGiraphConfiguration(initConf);
   }
 
   private static class IntFloatNoOpComputation extends
@@ -85,27 +92,18 @@ public class TestIntFloatPrimitiveMessageStores {
     }
   }
 
-  private static ImmutableClassesGiraphConfiguration<IntWritable, Writable,
-    Writable> createIntFloatConf() {
-
-    GiraphConfiguration initConf = new GiraphConfiguration();
-    initConf.setComputationClass(IntFloatNoOpComputation.class);
-    return new ImmutableClassesGiraphConfiguration(initConf);
-  }
-
   private static ByteArrayVertexIdMessages<IntWritable, FloatWritable>
   createIntFloatMessages() {
     ByteArrayVertexIdMessages<IntWritable, FloatWritable> messages =
         new ByteArrayVertexIdMessages<IntWritable, FloatWritable>(
             new TestMessageValueFactory<FloatWritable>(FloatWritable.class));
-    messages.setConf(createIntFloatConf());
+    messages.setConf(conf);
     messages.initialize();
     return messages;
   }
 
   private static void insertIntFloatMessages(
-      MessageStore<IntWritable, FloatWritable> messageStore) throws
-      IOException {
+      MessageStore<IntWritable, FloatWritable> messageStore) {
     ByteArrayVertexIdMessages<IntWritable, FloatWritable> messages =
         createIntFloatMessages();
     messages.add(new IntWritable(0), new FloatWritable(1));
@@ -123,7 +121,7 @@ public class TestIntFloatPrimitiveMessageStores {
   }
 
   @Test
-  public void testIntFloatMessageStore() throws IOException {
+  public void testIntFloatMessageStore() {
     IntFloatMessageStore messageStore =
         new IntFloatMessageStore(service, new FloatSumMessageCombiner());
     insertIntFloatMessages(messageStore);
@@ -145,11 +143,11 @@ public class TestIntFloatPrimitiveMessageStores {
   }
 
   @Test
-  public void testIntByteArrayMessageStore() throws IOException {
+  public void testIntByteArrayMessageStore() {
     IntByteArrayMessageStore<FloatWritable> messageStore =
         new IntByteArrayMessageStore<FloatWritable>(new
             TestMessageValueFactory<FloatWritable>(FloatWritable.class),
-            service, createIntFloatConf());
+            service, conf);
     insertIntFloatMessages(messageStore);
 
     Iterable<FloatWritable> m0 =
@@ -172,5 +170,12 @@ public class TestIntFloatPrimitiveMessageStores {
     Assert.assertEquals((float) 3.0, m2.iterator().next().get());
     Assert.assertTrue(
         Iterables.isEmpty(messageStore.getVertexMessages(new IntWritable(3))));
+  }
+
+  @Test
+  public void testIntByteArrayMessageStoreWithMessageEncoding() {
+    GiraphConstants.USE_MESSAGE_SIZE_ENCODING.set(conf, true);
+    testIntByteArrayMessageStore();
+    GiraphConstants.USE_MESSAGE_SIZE_ENCODING.set(conf, false);
   }
 }

@@ -18,33 +18,7 @@
 
 package org.apache.giraph.comm;
 
-import com.google.common.collect.Iterables;
-import com.google.common.collect.Lists;
-import com.google.common.collect.Sets;
-import com.google.common.io.Files;
-import org.apache.commons.io.FileUtils;
-import org.apache.giraph.bsp.CentralizedServiceWorker;
-import org.apache.giraph.comm.messages.ByteArrayMessagesPerVertexStore;
-import org.apache.giraph.comm.messages.out_of_core.DiskBackedMessageStore;
-import org.apache.giraph.comm.messages.MessageStore;
-import org.apache.giraph.comm.messages.MessageStoreFactory;
-import org.apache.giraph.comm.messages.out_of_core.PartitionDiskBackedMessageStore;
-import org.apache.giraph.comm.messages.out_of_core.SequentialFileMessageStore;
-import org.apache.giraph.conf.GiraphConfiguration;
-import org.apache.giraph.conf.GiraphConstants;
-import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
-import org.apache.giraph.factories.TestMessageValueFactory;
-import org.apache.giraph.utils.ByteArrayVertexIdMessages;
-import org.apache.giraph.utils.CollectionUtils;
-import org.apache.giraph.utils.IntNoOpComputation;
-import org.apache.giraph.utils.MockUtils;
-import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.io.IntWritable;
-import org.apache.hadoop.io.Writable;
-import org.apache.hadoop.io.WritableComparable;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import static org.junit.Assert.assertTrue;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
@@ -62,7 +36,32 @@ import java.util.SortedMap;
 import java.util.TreeMap;
 import java.util.TreeSet;
 
-import static org.junit.Assert.assertTrue;
+import org.apache.giraph.bsp.CentralizedServiceWorker;
+import org.apache.giraph.comm.messages.ByteArrayMessagesPerVertexStore;
+import org.apache.giraph.comm.messages.MessageEncodeAndStoreType;
+import org.apache.giraph.comm.messages.MessageStore;
+import org.apache.giraph.comm.messages.MessageStoreFactory;
+import org.apache.giraph.conf.DefaultMessageClasses;
+import org.apache.giraph.conf.GiraphConfiguration;
+import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
+import org.apache.giraph.factories.DefaultMessageValueFactory;
+import org.apache.giraph.factories.TestMessageValueFactory;
+import org.apache.giraph.utils.ByteArrayVertexIdMessages;
+import org.apache.giraph.utils.CollectionUtils;
+import org.apache.giraph.utils.IntNoOpComputation;
+import org.apache.giraph.utils.MockUtils;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.io.IntWritable;
+import org.apache.hadoop.io.Writable;
+import org.apache.hadoop.io.WritableComparable;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
+
+import com.google.common.collect.Iterables;
+import com.google.common.collect.Lists;
+import com.google.common.collect.Sets;
+import com.google.common.io.Files;
 
 /** Test for different types of message stores */
 public class TestMessageStores {
@@ -79,14 +78,10 @@ public class TestMessageStores {
   private static final Random RANDOM = new Random(101);
 
   @Before
-  public void prepare() throws IOException {
-    directory = Files.createTempDir();
-
+  public void prepare() {
     Configuration.addDefaultResource("giraph-site.xml");
     GiraphConfiguration initConfig = new GiraphConfiguration();
     initConfig.setComputationClass(IntNoOpComputation.class);
-    GiraphConstants.MESSAGES_DIRECTORY.set(
-        initConfig, new File(directory, "giraph_messages").toString());
     config = new ImmutableClassesGiraphConfiguration<IntWritable,
         IntWritable, IntWritable>(initConfig);
 
@@ -104,8 +99,7 @@ public class TestMessageStores {
   }
 
   @After
-  public void cleanUp() throws IOException {
-    FileUtils.deleteDirectory(directory);
+  public void cleanUp() {
   }
 
   private static class TestData {
@@ -141,7 +135,7 @@ public class TestMessageStores {
       MessageStore<IntWritable, IntWritable> messageStore,
       CentralizedServiceWorker<IntWritable, ?, ?> service,
       ImmutableClassesGiraphConfiguration<IntWritable, ?, ?> config,
-      Map<IntWritable, Collection<IntWritable>> inputMap) throws IOException {
+      Map<IntWritable, Collection<IntWritable>> inputMap) {
     for (Map.Entry<IntWritable, Collection<IntWritable>> entry :
         inputMap.entrySet()) {
       int partitionId =
@@ -162,7 +156,7 @@ public class TestMessageStores {
   private void putNTimes(
       MessageStore<IntWritable, IntWritable> messageStore,
       Map<IntWritable, Collection<IntWritable>> messages,
-      TestData testData) throws IOException {
+      TestData testData) {
     for (int n = 0; n < testData.numTimes; n++) {
       SortedMap<IntWritable, Collection<IntWritable>> batch =
           createRandomMessages(testData);
@@ -182,7 +176,7 @@ public class TestMessageStores {
   equalMessages(
       MessageStore<I, M> messageStore,
       Map<I, Collection<M>> expectedMessages,
-      TestData testData) throws IOException {
+      TestData testData) {
     for (int partitionId = 0; partitionId < testData.numOfPartitions;
          partitionId++) {
       TreeSet<I> vertexIds = Sets.newTreeSet();
@@ -220,7 +214,12 @@ public class TestMessageStores {
     }
     out.close();
 
-    messageStore = messageStoreFactory.newStore(new TestMessageValueFactory<IntWritable>(IntWritable.class));
+    messageStore = (S) messageStoreFactory.newStore(
+        new DefaultMessageClasses(
+            IntWritable.class,
+            DefaultMessageValueFactory.class,
+            null,
+            MessageEncodeAndStoreType.BYTEARRAY_PER_PARTITION));
 
     DataInputStream in = new DataInputStream(new BufferedInputStream(
         (new FileInputStream(file))));
@@ -240,7 +239,12 @@ public class TestMessageStores {
       TestData testData) throws IOException {
     SortedMap<IntWritable, Collection<IntWritable>> messages =
         new TreeMap<IntWritable, Collection<IntWritable>>();
-    S messageStore = messageStoreFactory.newStore(new TestMessageValueFactory<IntWritable>(IntWritable.class));
+    S messageStore = (S) messageStoreFactory.newStore(
+        new DefaultMessageClasses(
+            IntWritable.class,
+            DefaultMessageValueFactory.class,
+            null,
+            MessageEncodeAndStoreType.BYTEARRAY_PER_PARTITION));
     putNTimes(messageStore, messages, testData);
     assertTrue(equalMessages(messageStore, messages, testData));
     messageStore.clearAll();
@@ -256,24 +260,6 @@ public class TestMessageStores {
           ByteArrayMessagesPerVertexStore.<IntWritable, IntWritable>newFactory(
               service, config),
           testData);
-    } catch (IOException e) {
-      e.printStackTrace();
-    }
-  }
-
-  @Test
-  public void testDiskBackedMessageStoreByPartition() {
-    try {
-      MessageStoreFactory<IntWritable, IntWritable,
-          SequentialFileMessageStore<IntWritable, IntWritable>>
-          fileStoreFactory =
-          SequentialFileMessageStore.newFactory(config);
-      MessageStoreFactory<IntWritable, IntWritable,
-          PartitionDiskBackedMessageStore<IntWritable, IntWritable>>
-          partitionStoreFactory =
-          PartitionDiskBackedMessageStore.newFactory(config, fileStoreFactory);
-      testMessageStore(DiskBackedMessageStore.newFactory(service,
-          testData.maxMessagesInMemory, partitionStoreFactory), testData);
     } catch (IOException e) {
       e.printStackTrace();
     }

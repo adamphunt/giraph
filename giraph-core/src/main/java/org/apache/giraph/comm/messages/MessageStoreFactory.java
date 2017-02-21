@@ -20,7 +20,7 @@ package org.apache.giraph.comm.messages;
 
 import org.apache.giraph.bsp.CentralizedServiceWorker;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
-import org.apache.giraph.factories.MessageValueFactory;
+import org.apache.giraph.conf.MessageClasses;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableComparable;
 
@@ -36,14 +36,10 @@ public interface MessageStoreFactory<I extends WritableComparable,
   /**
    * Creates new message store.
    *
-   * Note: MessageCombiner class in Configuration can be changed,
-   * this method should return MessageStore which uses current combiner
-   *
-   *
-   * @param messageValueFactory Message class held in the store
+   * @param messageClasses Message classes information to be held in the store
    * @return New message store
    */
-  MS newStore(MessageValueFactory<M> messageValueFactory);
+  MS newStore(MessageClasses<I, M> messageClasses);
 
   /**
    * Implementation class should use this method of initialization
@@ -54,14 +50,4 @@ public interface MessageStoreFactory<I extends WritableComparable,
    */
   void initialize(CentralizedServiceWorker<I, ?, ?> service,
       ImmutableClassesGiraphConfiguration<I, ?, ?> conf);
-
-  /**
-   * This method is more for the performance optimization. If the message
-   * traversal would be done in order then data structure which is optimized
-   * for such traversal can be used.
-   *
-   * @return true if the messages would be traversed in order
-   * else return false
-   */
-  boolean shouldTraverseMessagesInOrder();
 }

@@ -25,13 +25,14 @@ import java.util.concurrent.ConcurrentMap;
 
 import org.apache.giraph.bsp.CentralizedServiceWorker;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
+import org.apache.giraph.conf.MessageClasses;
 import org.apache.giraph.factories.MessageValueFactory;
+import org.apache.giraph.utils.RepresentativeByteStructIterator;
+import org.apache.giraph.utils.VerboseByteStructMessageWrite;
 import org.apache.giraph.utils.VertexIdIterator;
 import org.apache.giraph.utils.VertexIdMessageBytesIterator;
 import org.apache.giraph.utils.VertexIdMessageIterator;
 import org.apache.giraph.utils.VertexIdMessages;
-import org.apache.giraph.utils.RepresentativeByteStructIterator;
-import org.apache.giraph.utils.VerboseByteStructMessageWrite;
 import org.apache.giraph.utils.io.DataInputOutput;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableComparable;
@@ -94,7 +95,7 @@ public class ByteArrayMessagesPerVertexStore<I extends WritableComparable,
 
   @Override
   public void addPartitionMessages(
-    int partitionId, VertexIdMessages<I, M> messages) throws IOException {
+    int partitionId, VertexIdMessages<I, M> messages) {
     ConcurrentMap<I, DataInputOutput> partitionMap =
         getOrCreatePartitionMap(partitionId);
     VertexIdMessageBytesIterator<I, M> vertexIdMessageBytesIterator =
@@ -116,17 +117,22 @@ public class ByteArrayMessagesPerVertexStore<I extends WritableComparable,
         }
       }
     } else {
-      VertexIdMessageIterator<I, M> vertexIdMessageIterator =
-          messages.getVertexIdMessageIterator();
-      while (vertexIdMessageIterator.hasNext()) {
-        vertexIdMessageIterator.next();
-        DataInputOutput dataInputOutput =
-            getDataInputOutput(partitionMap, vertexIdMessageIterator);
+      try {
+        VertexIdMessageIterator<I, M> vertexIdMessageIterator =
+            messages.getVertexIdMessageIterator();
+        while (vertexIdMessageIterator.hasNext()) {
+          vertexIdMessageIterator.next();
+          DataInputOutput dataInputOutput =
+              getDataInputOutput(partitionMap, vertexIdMessageIterator);
 
-        synchronized (dataInputOutput) {
-          VerboseByteStructMessageWrite.verboseWriteCurrentMessage(
-              vertexIdMessageIterator, dataInputOutput.getDataOutput());
+          synchronized (dataInputOutput) {
+            VerboseByteStructMessageWrite.verboseWriteCurrentMessage(
+                vertexIdMessageIterator, dataInputOutput.getDataOutput());
+          }
         }
+      } catch (IOException e) {
+        throw new RuntimeException("addPartitionMessages: IOException while" +
+            " adding messages for a partition: " + e);
       }
     }
   }
@@ -190,12 +196,15 @@ public class ByteArrayMessagesPerVertexStore<I extends WritableComparable,
    * @param <I> Vertex id
    * @param <M> Message data
    */
-  private static class Factory<I extends WritableComparable, M extends Writable>
+  public static class Factory<I extends WritableComparable, M extends Writable>
     implements MessageStoreFactory<I, M, MessageStore<I, M>> {
     /** Service worker */
     private CentralizedServiceWorker<I, ?, ?> service;
     /** Hadoop configuration */
     private ImmutableClassesGiraphConfiguration<I, ?, ?> config;
+
+    /** Constructor for reflection */
+    public Factory() { }
 
     /**
      * @param service Worker service
@@ -209,8 +218,9 @@ public class ByteArrayMessagesPerVertexStore<I extends WritableComparable,
 
     @Override
     public MessageStore<I, M> newStore(
-        MessageValueFactory<M> messageValueFactory) {
-      return new ByteArrayMessagesPerVertexStore<I, M>(messageValueFactory,
+        MessageClasses<I, M> messageClasses) {
+      return new ByteArrayMessagesPerVertexStore<I, M>(
+          messageClasses.createMessageValueFactory(config),
           service, config);
     }
 
@@ -219,11 +229,6 @@ public class ByteArrayMessagesPerVertexStore<I extends WritableComparable,
         ImmutableClassesGiraphConfiguration<I, ?, ?> conf) {
       this.service = service;
       this.config = conf;
-    }
-
-    @Override
-    public boolean shouldTraverseMessagesInOrder() {
-      return false;
     }
   }
 }

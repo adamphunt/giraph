@@ -18,8 +18,8 @@
 
 package org.apache.giraph.job;
 
+import com.google.common.collect.ImmutableList;
 import org.apache.giraph.bsp.BspInputFormat;
-import org.apache.giraph.bsp.BspOutputFormat;
 import org.apache.giraph.conf.GiraphConfiguration;
 import org.apache.giraph.conf.GiraphConstants;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
@@ -218,14 +218,14 @@ public class GiraphJob {
     giraphConfiguration.setBoolean("mapreduce.job.user.classpath.first", true);
 
     // If the checkpoint frequency is 0 (no failure handling), set the max
-    // tasks attempts to be 0 to encourage faster failure of unrecoverable jobs
+    // tasks attempts to be 1 to encourage faster failure of unrecoverable jobs
     if (giraphConfiguration.getCheckpointFrequency() == 0) {
       int oldMaxTaskAttempts = giraphConfiguration.getMaxTaskAttempts();
-      giraphConfiguration.setMaxTaskAttempts(0);
+      giraphConfiguration.setMaxTaskAttempts(1);
       if (LOG.isInfoEnabled()) {
         LOG.info("run: Since checkpointing is disabled (default), " +
             "do not allow any task retries (setting " +
-            GiraphConstants.MAX_TASK_ATTEMPTS.getKey() + " = 0, " +
+            GiraphConstants.MAX_TASK_ATTEMPTS.getKey() + " = 1, " +
             "old value = " + oldMaxTaskAttempts + ")");
       }
     }
@@ -238,8 +238,16 @@ public class GiraphJob {
     int tryCount = 0;
     GiraphJobRetryChecker retryChecker = conf.getJobRetryChecker();
     while (true) {
+      GiraphJobObserver jobObserver = conf.getJobObserver();
+
       JobProgressTrackerService jobProgressTrackerService =
-          JobProgressTrackerService.createJobProgressServer(conf);
+          DefaultJobProgressTrackerService.createJobProgressTrackerService(
+              conf, jobObserver);
+      ClientThriftServer clientThriftServer = null;
+      if (jobProgressTrackerService != null) {
+        clientThriftServer = new ClientThriftServer(
+            conf, ImmutableList.of(jobProgressTrackerService));
+      }
 
       tryCount++;
       Job submittedJob = new Job(conf, jobName);
@@ -249,12 +257,12 @@ public class GiraphJob {
       submittedJob.setNumReduceTasks(0);
       submittedJob.setMapperClass(GraphMapper.class);
       submittedJob.setInputFormatClass(BspInputFormat.class);
-      submittedJob.setOutputFormatClass(BspOutputFormat.class);
+      submittedJob.setOutputFormatClass(
+          GiraphConstants.HADOOP_OUTPUT_FORMAT_CLASS.get(conf));
       if (jobProgressTrackerService != null) {
         jobProgressTrackerService.setJob(submittedJob);
       }
 
-      GiraphJobObserver jobObserver = conf.getJobObserver();
       jobObserver.launchingJob(submittedJob);
       submittedJob.submit();
       if (LOG.isInfoEnabled()) {
@@ -270,6 +278,10 @@ public class GiraphJob {
       if (jobProgressTrackerService != null) {
         jobProgressTrackerService.stop(passed);
       }
+      if (clientThriftServer != null) {
+        clientThriftServer.stopThriftServer();
+      }
+
       jobObserver.jobFinished(submittedJob, passed);
 
       if (!passed) {

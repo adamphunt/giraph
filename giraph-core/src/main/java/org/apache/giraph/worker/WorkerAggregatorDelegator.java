@@ -54,6 +54,11 @@ public abstract class WorkerAggregatorDelegator<I extends WritableComparable,
   }
 
   @Override
+  public void reduceMerge(String name, Writable value) {
+    workerGlobalCommUsage.reduceMerge(name, value);
+  }
+
+  @Override
   public final <B extends Writable> B getBroadcast(String name) {
     return workerGlobalCommUsage.getBroadcast(name);
   }
@@ -64,7 +69,7 @@ public abstract class WorkerAggregatorDelegator<I extends WritableComparable,
   }
 
   @Override
-  public final <A extends Writable> A getAggregatedValue(String name) {
+  public <A extends Writable> A getAggregatedValue(String name) {
     AggregatorBroadcast<A> broadcast = workerGlobalCommUsage.getBroadcast(name);
     return broadcast.getValue();
   }

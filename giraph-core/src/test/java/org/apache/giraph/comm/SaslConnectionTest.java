@@ -88,10 +88,11 @@ public class SaslConnectionTest {
             mockedSaslServerFactory,
             new MockExceptionHandler());
     server.start();
-    workerInfo.setInetSocketAddress(server.getMyAddress());
+    workerInfo.setInetSocketAddress(server.getMyAddress(), server.getLocalHostOrIp());
 
     NettyClient client = new NettyClient(context, conf, new WorkerInfo(),
         new MockExceptionHandler());
+    server.setFlowControl(client.getFlowControl());
     client.connectAllAddresses(Lists.<WorkerInfo>newArrayList(workerInfo));
 
     client.stop();

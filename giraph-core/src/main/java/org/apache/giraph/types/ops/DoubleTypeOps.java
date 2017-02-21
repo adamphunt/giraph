@@ -17,13 +17,20 @@
  */
 package org.apache.giraph.types.ops;
 
-import org.apache.giraph.types.ops.collections.BasicArrayList.BasicDoubleArrayList;
+import org.apache.giraph.types.ops.collections.array.WDoubleArrayList;
 import org.apache.hadoop.io.DoubleWritable;
 
+import java.io.DataInput;
+import java.io.IOException;
+
+// AUTO-GENERATED class via class:
+// org.apache.giraph.generate.GeneratePrimitiveClasses
+
 /** TypeOps implementation for working with DoubleWritable type */
-public enum DoubleTypeOps implements PrimitiveTypeOps<DoubleWritable> {
+public enum DoubleTypeOps implements
+    PrimitiveTypeOps<DoubleWritable>, NumericTypeOps<DoubleWritable> {
   /** Singleton instance */
-  INSTANCE();
+  INSTANCE;
 
   @Override
   public Class<DoubleWritable> getTypeClass() {
@@ -46,7 +53,57 @@ public enum DoubleTypeOps implements PrimitiveTypeOps<DoubleWritable> {
   }
 
   @Override
-  public BasicDoubleArrayList createArrayList(int capacity) {
-    return new BasicDoubleArrayList(capacity);
+  public WDoubleArrayList createArrayList() {
+    return new WDoubleArrayList();
+  }
+
+  @Override
+  public WDoubleArrayList createArrayList(int capacity) {
+    return new WDoubleArrayList(capacity);
+  }
+
+  @Override
+  public WDoubleArrayList readNewArrayList(DataInput in) throws IOException {
+    return WDoubleArrayList.readNew(in);
+  }
+
+  @Override
+  public DoubleWritable createZero() {
+    return new DoubleWritable(0);
+  }
+
+  @Override
+  public DoubleWritable createOne() {
+    return new DoubleWritable(1);
+  }
+
+  @Override
+  public DoubleWritable createMinNegativeValue() {
+    return new DoubleWritable(Double.NEGATIVE_INFINITY);
+  }
+
+  @Override
+  public DoubleWritable createMaxPositiveValue() {
+    return new DoubleWritable(Double.POSITIVE_INFINITY);
+  }
+
+  @Override
+  public void plusInto(DoubleWritable value, DoubleWritable increment) {
+    value.set(value.get() + increment.get());
+  }
+
+  @Override
+  public void multiplyInto(DoubleWritable value, DoubleWritable multiplier) {
+    value.set(value.get() * multiplier.get());
+  }
+
+  @Override
+  public void negate(DoubleWritable value) {
+    value.set(-value.get());
+  }
+
+  @Override
+  public int compare(DoubleWritable value1, DoubleWritable value2) {
+    return Double.compare(value1.get(), value2.get());
   }
 }

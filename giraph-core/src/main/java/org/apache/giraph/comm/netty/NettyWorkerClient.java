@@ -20,6 +20,7 @@ package org.apache.giraph.comm.netty;
 
 import org.apache.giraph.bsp.CentralizedServiceWorker;
 import org.apache.giraph.comm.WorkerClient;
+import org.apache.giraph.comm.flow_control.FlowControl;
 import org.apache.giraph.comm.requests.RequestType;
 import org.apache.giraph.comm.requests.WritableRequest;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
@@ -138,7 +139,7 @@ public class NettyWorkerClient<I extends WritableComparable,
   }
 
   @Override
-  public void sendWritableRequest(Integer destTaskId,
+  public void sendWritableRequest(int destTaskId,
                                   WritableRequest request) {
     Counter counter = superstepRequestCounters.get(request.getType());
     if (counter != null) {
@@ -180,4 +181,9 @@ else[HADOOP_NON_SECURE]*/
   }
 
 /*end[HADOOP_NON_SECURE]*/
+
+  @Override
+  public FlowControl getFlowControl() {
+    return nettyClient.getFlowControl();
+  }
 }

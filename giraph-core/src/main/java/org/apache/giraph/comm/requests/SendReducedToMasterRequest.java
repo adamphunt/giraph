@@ -20,7 +20,7 @@ package org.apache.giraph.comm.requests;
 
 import java.io.IOException;
 
-import org.apache.giraph.master.MasterAggregatorHandler;
+import org.apache.giraph.master.MasterGlobalCommHandler;
 
 /**
  * Request to send final aggregated values from worker which owns
@@ -45,9 +45,9 @@ public class SendReducedToMasterRequest extends ByteArrayRequest
   }
 
   @Override
-  public void doRequest(MasterAggregatorHandler aggregatorHandler) {
+  public void doRequest(MasterGlobalCommHandler commHandler) {
     try {
-      aggregatorHandler.acceptReducedValues(getDataInput());
+      commHandler.getAggregatorHandler().acceptReducedValues(getDataInput());
     } catch (IOException e) {
       throw new IllegalStateException("doRequest: " +
           "IOException occurred while processing request", e);

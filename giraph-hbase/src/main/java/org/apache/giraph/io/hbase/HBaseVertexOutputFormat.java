@@ -123,7 +123,7 @@ public abstract class HBaseVertexOutputFormat<
      * @return Record writer to be used for writing.
      */
     public RecordWriter<ImmutableBytesWritable,
-            Mutation> getRecordWriter() {
+        Mutation> getRecordWriter() {
       return recordWriter;
     }
 

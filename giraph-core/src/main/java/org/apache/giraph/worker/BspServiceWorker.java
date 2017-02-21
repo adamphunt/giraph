@@ -26,13 +26,11 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
-import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Queue;
 import java.util.Set;
-import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
@@ -42,7 +40,7 @@ import net.iharder.Base64;
 import org.apache.giraph.bsp.ApplicationState;
 import org.apache.giraph.bsp.BspService;
 import org.apache.giraph.bsp.CentralizedServiceWorker;
-import org.apache.giraph.bsp.CheckpointStatus;
+import org.apache.giraph.bsp.checkpoints.CheckpointStatus;
 import org.apache.giraph.comm.ServerData;
 import org.apache.giraph.comm.WorkerClient;
 import org.apache.giraph.comm.WorkerClientRequestProcessor;
@@ -54,6 +52,7 @@ import org.apache.giraph.comm.netty.NettyWorkerAggregatorRequestProcessor;
 import org.apache.giraph.comm.netty.NettyWorkerClient;
 import org.apache.giraph.comm.netty.NettyWorkerClientRequestProcessor;
 import org.apache.giraph.comm.netty.NettyWorkerServer;
+import org.apache.giraph.comm.requests.PartitionStatsRequest;
 import org.apache.giraph.conf.GiraphConstants;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
 import org.apache.giraph.edge.Edge;
@@ -61,8 +60,6 @@ import org.apache.giraph.graph.AddressesAndPartitionsWritable;
 import org.apache.giraph.graph.FinishedSuperstepStats;
 import org.apache.giraph.graph.GlobalStats;
 import org.apache.giraph.graph.GraphTaskManager;
-import org.apache.giraph.graph.InputSplitEvents;
-import org.apache.giraph.graph.InputSplitPaths;
 import org.apache.giraph.graph.Vertex;
 import org.apache.giraph.graph.VertexEdgeCount;
 import org.apache.giraph.io.EdgeOutputFormat;
@@ -79,12 +76,14 @@ import org.apache.giraph.metrics.GiraphTimerContext;
 import org.apache.giraph.metrics.ResetSuperstepMetricsObserver;
 import org.apache.giraph.metrics.SuperstepMetricsRegistry;
 import org.apache.giraph.metrics.WorkerSuperstepMetrics;
+import org.apache.giraph.ooc.OutOfCoreEngine;
 import org.apache.giraph.partition.Partition;
 import org.apache.giraph.partition.PartitionExchange;
 import org.apache.giraph.partition.PartitionOwner;
 import org.apache.giraph.partition.PartitionStats;
 import org.apache.giraph.partition.PartitionStore;
 import org.apache.giraph.partition.WorkerGraphPartitioner;
+import org.apache.giraph.utils.BlockingElementsSet;
 import org.apache.giraph.utils.CallableFactory;
 import org.apache.giraph.utils.CheckpointingUtils;
 import org.apache.giraph.utils.JMapHistoDumper;
@@ -116,7 +115,6 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 
 /**
@@ -160,6 +158,10 @@ public class BspServiceWorker<I extends WritableComparable,
   /** Have the partition exchange children (workers) changed? */
   private final BspEvent partitionExchangeChildrenChanged;
 
+  /** Addresses and partitions transfer */
+  private BlockingElementsSet<AddressesAndPartitionsWritable>
+      addressesAndPartitionsHolder = new BlockingElementsSet<>();
+
   /** Worker Context */
   private final WorkerContext workerContext;
 
@@ -179,6 +181,12 @@ public class BspServiceWorker<I extends WritableComparable,
   private GiraphTimer wcPostSuperstepTimer;
   /** Time spent waiting on requests to finish */
   private GiraphTimer waitRequestsTimer;
+
+  /** InputSplit handlers used in INPUT_SUPERSTEP */
+  private WorkerInputSplitsHandler inputSplitsHandler;
+
+  /** Memory observer */
+  private final MemoryObserver memoryObserver;
 
   /**
    * Constructor for setting up the worker.
@@ -206,10 +214,16 @@ public class BspServiceWorker<I extends WritableComparable,
     workerInfo = new WorkerInfo();
     workerServer = new NettyWorkerServer<I, V, E>(conf, this, context,
         graphTaskManager.createUncaughtExceptionHandler());
-    workerInfo.setInetSocketAddress(workerServer.getMyAddress());
+    workerInfo.setInetSocketAddress(workerServer.getMyAddress(),
+        workerServer.getLocalHostOrIp());
     workerInfo.setTaskId(getTaskPartition());
     workerClient = new NettyWorkerClient<I, V, E>(context, conf, this,
         graphTaskManager.createUncaughtExceptionHandler());
+    workerServer.setFlowControl(workerClient.getFlowControl());
+    OutOfCoreEngine oocEngine = workerServer.getServerData().getOocEngine();
+    if (oocEngine != null) {
+      oocEngine.setFlowControl(workerClient.getFlowControl());
+    }
 
     workerAggregatorRequestProcessor =
         new NettyWorkerAggregatorRequestProcessor(getContext(), conf, this);
@@ -235,6 +249,11 @@ public class BspServiceWorker<I extends WritableComparable,
         null;
 
     GiraphMetrics.get().addSuperstepResetObserver(this);
+
+    inputSplitsHandler = new WorkerInputSplitsHandler(
+        workerInfo, masterInfo.getTaskId(), workerClient);
+
+    memoryObserver = new MemoryObserver(getZkExt(), memoryObserverPath, conf);
   }
 
   @Override
@@ -291,26 +310,20 @@ public class BspServiceWorker<I extends WritableComparable,
    *
    * Use one or more threads to do the loading.
    *
-   * @param inputSplitPathList List of input split paths
    * @param inputSplitsCallableFactory Factory for {@link InputSplitsCallable}s
    * @return Statistics of the vertices and edges loaded
    * @throws InterruptedException
    * @throws KeeperException
    */
   private VertexEdgeCount loadInputSplits(
-      List<String> inputSplitPathList,
       CallableFactory<VertexEdgeCount> inputSplitsCallableFactory)
     throws KeeperException, InterruptedException {
     VertexEdgeCount vertexEdgeCount = new VertexEdgeCount();
-    // Determine how many threads to use based on the number of input splits
-    int maxInputSplitThreads = (inputSplitPathList.size() - 1) /
-        getConfiguration().getMaxWorkers() + 1;
-    int numThreads = Math.min(getConfiguration().getNumInputSplitsThreads(),
-        maxInputSplitThreads);
+    int numThreads = getConfiguration().getNumInputSplitsThreads();
     if (LOG.isInfoEnabled()) {
       LOG.info("loadInputSplits: Using " + numThreads + " thread(s), " +
           "originally " + getConfiguration().getNumInputSplitsThreads() +
-          " threads(s) for " + inputSplitPathList.size() + " total splits.");
+          " threads(s)");
     }
 
     List<VertexEdgeCount> results =
@@ -332,46 +345,21 @@ public class BspServiceWorker<I extends WritableComparable,
    */
   private long loadMapping() throws KeeperException,
     InterruptedException {
-    List<String> inputSplitPathList =
-        getZkExt().getChildrenExt(mappingInputSplitsPaths.getPath(),
-        false, false, true);
-
-    InputSplitPathOrganizer splitOrganizer =
-        new InputSplitPathOrganizer(getZkExt(),
-            inputSplitPathList, getWorkerInfo().getHostname(),
-            getConfiguration().useInputSplitLocality());
-
     MappingInputSplitsCallableFactory<I, V, E, ? extends Writable>
-        mappingInputSplitsCallableFactory =
+        inputSplitsCallableFactory =
         new MappingInputSplitsCallableFactory<>(
             getConfiguration().createWrappedMappingInputFormat(),
-            splitOrganizer,
             getContext(),
             getConfiguration(),
             this,
-            getZkExt());
+            inputSplitsHandler);
 
-    long entriesLoaded = 0;
-    // Determine how many threads to use based on the number of input splits
-    int maxInputSplitThreads = inputSplitPathList.size();
-    int numThreads = Math.min(getConfiguration().getNumInputSplitsThreads(),
-        maxInputSplitThreads);
-    if (LOG.isInfoEnabled()) {
-      LOG.info("loadInputSplits: Using " + numThreads + " thread(s), " +
-          "originally " + getConfiguration().getNumInputSplitsThreads() +
-          " threads(s) for " + inputSplitPathList.size() + " total splits.");
-    }
+    long mappingsLoaded =
+        loadInputSplits(inputSplitsCallableFactory).getMappingCount();
 
-    List<Integer> results =
-        ProgressableUtils.getResultsWithNCallables(
-            mappingInputSplitsCallableFactory,
-            numThreads, "load-mapping-%d", getContext());
-    for (Integer result : results) {
-      entriesLoaded += result;
-    }
     // after all threads finish loading - call postFilling
     localData.getMappingStore().postFilling();
-    return entriesLoaded;
+    return mappingsLoaded;
   }
 
   /**
@@ -382,31 +370,15 @@ public class BspServiceWorker<I extends WritableComparable,
    */
   private VertexEdgeCount loadVertices() throws KeeperException,
       InterruptedException {
-    List<String> inputSplitPathList =
-        getZkExt().getChildrenExt(vertexInputSplitsPaths.getPath(),
-            false, false, true);
-
-    InputSplitPathOrganizer splitOrganizer =
-        new InputSplitPathOrganizer(getZkExt(),
-            inputSplitPathList, getWorkerInfo().getHostname(),
-            getConfiguration().useInputSplitLocality());
-    InputSplitsHandler splitsHandler = new InputSplitsHandler(
-        splitOrganizer,
-        getZkExt(),
-        getContext(),
-        BspService.VERTEX_INPUT_SPLIT_RESERVED_NODE,
-        BspService.VERTEX_INPUT_SPLIT_FINISHED_NODE);
-
     VertexInputSplitsCallableFactory<I, V, E> inputSplitsCallableFactory =
         new VertexInputSplitsCallableFactory<I, V, E>(
             getConfiguration().createWrappedVertexInputFormat(),
             getContext(),
             getConfiguration(),
             this,
-            splitsHandler,
-            getZkExt());
+            inputSplitsHandler);
 
-    return loadInputSplits(inputSplitPathList, inputSplitsCallableFactory);
+    return loadInputSplits(inputSplitsCallableFactory);
   }
 
   /**
@@ -416,32 +388,15 @@ public class BspServiceWorker<I extends WritableComparable,
    * @return Number of edges loaded
    */
   private long loadEdges() throws KeeperException, InterruptedException {
-    List<String> inputSplitPathList =
-        getZkExt().getChildrenExt(edgeInputSplitsPaths.getPath(),
-            false, false, true);
-
-    InputSplitPathOrganizer splitOrganizer =
-        new InputSplitPathOrganizer(getZkExt(),
-            inputSplitPathList, getWorkerInfo().getHostname(),
-            getConfiguration().useInputSplitLocality());
-    InputSplitsHandler splitsHandler = new InputSplitsHandler(
-        splitOrganizer,
-        getZkExt(),
-        getContext(),
-        BspService.EDGE_INPUT_SPLIT_RESERVED_NODE,
-        BspService.EDGE_INPUT_SPLIT_FINISHED_NODE);
-
     EdgeInputSplitsCallableFactory<I, V, E> inputSplitsCallableFactory =
         new EdgeInputSplitsCallableFactory<I, V, E>(
             getConfiguration().createWrappedEdgeInputFormat(),
             getContext(),
             getConfiguration(),
             this,
-            splitsHandler,
-            getZkExt());
+            inputSplitsHandler);
 
-    return loadInputSplits(inputSplitPathList, inputSplitsCallableFactory).
-        getEdgeCount();
+    return loadInputSplits(inputSplitsCallableFactory).getEdgeCount();
   }
 
   @Override
@@ -455,46 +410,12 @@ public class BspServiceWorker<I extends WritableComparable,
   }
 
   /**
-   * Ensure the input splits are ready for processing
-   *
-   * @param inputSplitPaths Input split paths
-   * @param inputSplitEvents Input split events
-   */
-  private void ensureInputSplitsReady(InputSplitPaths inputSplitPaths,
-                                      InputSplitEvents inputSplitEvents) {
-    while (true) {
-      Stat inputSplitsReadyStat;
-      try {
-        inputSplitsReadyStat = getZkExt().exists(
-            inputSplitPaths.getAllReadyPath(), true);
-      } catch (KeeperException e) {
-        throw new IllegalStateException("ensureInputSplitsReady: " +
-            "KeeperException waiting on input splits", e);
-      } catch (InterruptedException e) {
-        throw new IllegalStateException("ensureInputSplitsReady: " +
-            "InterruptedException waiting on input splits", e);
-      }
-      if (inputSplitsReadyStat != null) {
-        break;
-      }
-      inputSplitEvents.getAllReadyChanged().waitForever();
-      inputSplitEvents.getAllReadyChanged().reset();
-    }
-  }
-
-  /**
    * Mark current worker as done and then wait for all workers
    * to finish processing input splits.
-   *
-   * @param inputSplitPaths Input split paths
-   * @param inputSplitEvents Input split events
    */
-  private void markCurrentWorkerDoneThenWaitForOthers(
-    InputSplitPaths inputSplitPaths,
-    InputSplitEvents inputSplitEvents) {
+  private void markCurrentWorkerDoneReadingThenWaitForOthers() {
     String workerInputSplitsDonePath =
-        inputSplitPaths.getDonePath() + "/" +
-            getWorkerInfo().getHostnameId();
+        inputSplitsWorkerDonePath + "/" + getWorkerInfo().getHostnameId();
     try {
       getZkExt().createExt(workerInputSplitsDonePath,
           null,
@@ -504,32 +425,31 @@ public class BspServiceWorker<I extends WritableComparable,
     } catch (KeeperException e) {
       throw new IllegalStateException(
           "markCurrentWorkerDoneThenWaitForOthers: " +
-          "KeeperException creating worker done splits", e);
+              "KeeperException creating worker done splits", e);
     } catch (InterruptedException e) {
       throw new IllegalStateException(
           "markCurrentWorkerDoneThenWaitForOthers: " +
-          "InterruptedException creating worker done splits", e);
+              "InterruptedException creating worker done splits", e);
     }
     while (true) {
       Stat inputSplitsDoneStat;
       try {
         inputSplitsDoneStat =
-            getZkExt().exists(inputSplitPaths.getAllDonePath(),
-                true);
+            getZkExt().exists(inputSplitsAllDonePath, true);
       } catch (KeeperException e) {
         throw new IllegalStateException(
             "markCurrentWorkerDoneThenWaitForOthers: " +
-            "KeeperException waiting on worker done splits", e);
+                "KeeperException waiting on worker done splits", e);
       } catch (InterruptedException e) {
         throw new IllegalStateException(
             "markCurrentWorkerDoneThenWaitForOthers: " +
-            "InterruptedException waiting on worker done splits", e);
+                "InterruptedException waiting on worker done splits", e);
       }
       if (inputSplitsDoneStat != null) {
         break;
       }
-      inputSplitEvents.getAllDoneChanged().waitForever();
-      inputSplitEvents.getAllDoneChanged().reset();
+      getInputSplitsAllDoneEvent().waitForever();
+      getInputSplitsAllDoneEvent().reset();
     }
   }
 
@@ -577,12 +497,13 @@ public class BspServiceWorker<I extends WritableComparable,
         startSuperstep();
     workerGraphPartitioner.updatePartitionOwners(
         getWorkerInfo(), masterSetPartitionOwners);
+    getPartitionStore().initialize();
 
-    /*if[HADOOP_NON_SECURE]
-      workerClient.setup();
-    else[HADOOP_NON_SECURE]*/
+/*if[HADOOP_NON_SECURE]
+    workerClient.setup();
+else[HADOOP_NON_SECURE]*/
     workerClient.setup(getConfiguration().authenticate());
-    /*end[HADOOP_NON_SECURE]*/
+/*end[HADOOP_NON_SECURE]*/
 
     // Initialize aggregator at worker side during setup.
     // Do this just before vertex and edge loading.
@@ -592,8 +513,6 @@ public class BspServiceWorker<I extends WritableComparable,
     long entriesLoaded;
 
     if (getConfiguration().hasMappingInputFormat()) {
-      // Ensure the mapping InputSplits are ready for processing
-      ensureInputSplitsReady(mappingInputSplitsPaths, mappingInputSplitsEvents);
       getContext().progress();
       try {
         entriesLoaded = loadMapping();
@@ -613,17 +532,12 @@ public class BspServiceWorker<I extends WritableComparable,
             entriesLoaded + " entries from inputSplits");
       }
 
-      // Workers wait for each other to finish, coordinated by master
-      markCurrentWorkerDoneThenWaitForOthers(mappingInputSplitsPaths,
-          mappingInputSplitsEvents);
       // Print stats for data stored in localData once mapping is fully
       // loaded on all the workers
       localData.printStats();
     }
 
     if (getConfiguration().hasVertexInputFormat()) {
-      // Ensure the vertex InputSplits are ready for processing
-      ensureInputSplitsReady(vertexInputSplitsPaths, vertexInputSplitsEvents);
       getContext().progress();
       try {
         vertexEdgeCount = loadVertices();
@@ -641,8 +555,6 @@ public class BspServiceWorker<I extends WritableComparable,
     WorkerProgress.get().finishLoadingVertices();
 
     if (getConfiguration().hasEdgeInputFormat()) {
-      // Ensure the edge InputSplits are ready for processing
-      ensureInputSplitsReady(edgeInputSplitsPaths, edgeInputSplitsEvents);
       getContext().progress();
       try {
         vertexEdgeCount = vertexEdgeCount.incrVertexEdgeCount(0, loadEdges());
@@ -661,17 +573,7 @@ public class BspServiceWorker<I extends WritableComparable,
       LOG.info("setup: Finally loaded a total of " + vertexEdgeCount);
     }
 
-    if (getConfiguration().hasVertexInputFormat()) {
-      // Workers wait for each other to finish, coordinated by master
-      markCurrentWorkerDoneThenWaitForOthers(vertexInputSplitsPaths,
-          vertexInputSplitsEvents);
-    }
-
-    if (getConfiguration().hasEdgeInputFormat()) {
-      // Workers wait for each other to finish, coordinated by master
-      markCurrentWorkerDoneThenWaitForOthers(edgeInputSplitsPaths,
-          edgeInputSplitsEvents);
-    }
+    markCurrentWorkerDoneReadingThenWaitForOthers();
 
     // Create remaining partitions owned by this worker.
     for (PartitionOwner partitionOwner : masterSetPartitionOwners) {
@@ -697,17 +599,15 @@ public class BspServiceWorker<I extends WritableComparable,
     // if necessary
     List<PartitionStats> partitionStatsList =
         new ArrayList<PartitionStats>();
-    for (Integer partitionId : getPartitionStore().getPartitionIds()) {
-      Partition<I, V, E> partition =
-          getPartitionStore().getOrCreatePartition(partitionId);
+    PartitionStore<I, V, E> partitionStore = getPartitionStore();
+    for (Integer partitionId : partitionStore.getPartitionIds()) {
       PartitionStats partitionStats =
-          new PartitionStats(partition.getId(),
-              partition.getVertexCount(),
+          new PartitionStats(partitionId,
+              partitionStore.getPartitionVertexCount(partitionId),
               0,
-              partition.getEdgeCount(),
+              partitionStore.getPartitionEdgeCount(partitionId),
               0, 0);
       partitionStatsList.add(partitionStats);
-      getPartitionStore().putPartition(partition);
     }
     workerGraphPartitioner.finalizePartitionStats(
         partitionStatsList, getPartitionStore());
@@ -808,31 +708,8 @@ public class BspServiceWorker<I extends WritableComparable,
 
     registerHealth(getSuperstep());
 
-    String addressesAndPartitionsPath =
-        getAddressesAndPartitionsPath(getApplicationAttempt(),
-            getSuperstep());
     AddressesAndPartitionsWritable addressesAndPartitions =
-        new AddressesAndPartitionsWritable(
-            workerGraphPartitioner.createPartitionOwner().getClass());
-    try {
-      while (getZkExt().exists(addressesAndPartitionsPath, true) ==
-          null) {
-        getAddressesAndPartitionsReadyChangedEvent().waitForever();
-        getAddressesAndPartitionsReadyChangedEvent().reset();
-      }
-      WritableUtils.readFieldsFromZnode(
-          getZkExt(),
-          addressesAndPartitionsPath,
-          false,
-          null,
-          addressesAndPartitions);
-    } catch (KeeperException e) {
-      throw new IllegalStateException(
-          "startSuperstep: KeeperException getting assignments", e);
-    } catch (InterruptedException e) {
-      throw new IllegalStateException(
-          "startSuperstep: InterruptedException getting assignments", e);
-    }
+        addressesAndPartitionsHolder.getElement(getContext());
 
     workerInfoList.clear();
     workerInfoList = addressesAndPartitions.getWorkerInfos();
@@ -840,10 +717,6 @@ public class BspServiceWorker<I extends WritableComparable,
 
     if (LOG.isInfoEnabled()) {
       LOG.info("startSuperstep: " + masterInfo);
-      LOG.info("startSuperstep: Ready for computation on superstep " +
-          getSuperstep() + " since worker " +
-          "selection and vertex range assignments are done in " +
-          addressesAndPartitionsPath);
     }
 
     getContext().setStatus("startSuperstep: " +
@@ -931,7 +804,8 @@ public class BspServiceWorker<I extends WritableComparable,
     waitForOtherWorkers(superstepFinishedNode);
 
     GlobalStats globalStats = new GlobalStats();
-    SuperstepClasses superstepClasses = new SuperstepClasses();
+    SuperstepClasses superstepClasses = SuperstepClasses.createToRead(
+        getConfiguration());
     WritableUtils.readFieldsFromZnode(
         getZkExt(), superstepFinishedNode, false, null, globalStats,
         superstepClasses);
@@ -1021,18 +895,14 @@ public class BspServiceWorker<I extends WritableComparable,
     Collection<PartitionStats> finalizedPartitionStats =
         workerGraphPartitioner.finalizePartitionStats(
             partitionStatsList, getPartitionStore());
-    List<PartitionStats> finalizedPartitionStatsList =
-        new ArrayList<PartitionStats>(finalizedPartitionStats);
-    byte[] partitionStatsBytes =
-        WritableUtils.writeListToByteArray(finalizedPartitionStatsList);
+    workerClient.sendWritableRequest(masterInfo.getTaskId(),
+        new PartitionStatsRequest(finalizedPartitionStats));
     WorkerSuperstepMetrics metrics = new WorkerSuperstepMetrics();
     metrics.readFromRegistry();
     byte[] metricsBytes = WritableUtils.writeToByteArray(metrics);
 
     JSONObject workerFinishedInfoObj = new JSONObject();
     try {
-      workerFinishedInfoObj.put(JSONOBJ_PARTITION_STATS_KEY,
-          Base64.encodeBytes(partitionStatsBytes));
       workerFinishedInfoObj.put(JSONOBJ_NUM_MESSAGES_KEY, workerSentMessages);
       workerFinishedInfoObj.put(JSONOBJ_NUM_MESSAGE_BYTES_KEY,
         workerSentMessageBytes);
@@ -1098,18 +968,12 @@ public class BspServiceWorker<I extends WritableComparable,
     final VertexOutputFormat<I, V, E> vertexOutputFormat =
         getConfiguration().createWrappedVertexOutputFormat();
 
-    final Queue<Integer> partitionIdQueue =
-        (numPartitions == 0) ? new LinkedList<Integer>() :
-            new ArrayBlockingQueue<Integer>(numPartitions);
-    Iterables.addAll(partitionIdQueue, getPartitionStore().getPartitionIds());
+    getPartitionStore().startIteration();
 
     long verticesToStore = 0;
     PartitionStore<I, V, E> partitionStore = getPartitionStore();
     for (int partitionId : partitionStore.getPartitionIds()) {
-      Partition<I, V, E> partition =
-        partitionStore.getOrCreatePartition(partitionId);
-      verticesToStore += partition.getVertexCount();
-      partitionStore.putPartition(partition);
+      verticesToStore += partitionStore.getPartitionVertexCount(partitionId);
     }
     WorkerProgress.get().startStoring(
         verticesToStore, getPartitionStore().getNumPartitions());
@@ -1132,14 +996,13 @@ public class BspServiceWorker<I extends WritableComparable,
             long nextPrintMsecs = System.currentTimeMillis() + 15000;
             int partitionIndex = 0;
             int numPartitions = getPartitionStore().getNumPartitions();
-            while (!partitionIdQueue.isEmpty()) {
-              Integer partitionId = partitionIdQueue.poll();
-              if (partitionId == null) {
+            while (true) {
+              Partition<I, V, E> partition =
+                  getPartitionStore().getNextPartition();
+              if (partition == null) {
                 break;
               }
 
-              Partition<I, V, E> partition =
-                  getPartitionStore().getOrCreatePartition(partitionId);
               long verticesWritten = 0;
               for (Vertex<I, V, E> vertex : partition) {
                 vertexWriter.writeVertex(vertex);
@@ -1229,10 +1092,7 @@ public class BspServiceWorker<I extends WritableComparable,
     final EdgeOutputFormat<I, V, E> edgeOutputFormat =
         conf.createWrappedEdgeOutputFormat();
 
-    final Queue<Integer> partitionIdQueue =
-        (numPartitions == 0) ? new LinkedList<Integer>() :
-            new ArrayBlockingQueue<Integer>(numPartitions);
-    Iterables.addAll(partitionIdQueue, getPartitionStore().getPartitionIds());
+    getPartitionStore().startIteration();
 
     CallableFactory<Void> callableFactory = new CallableFactory<Void>() {
       @Override
@@ -1249,14 +1109,13 @@ public class BspServiceWorker<I extends WritableComparable,
             long nextPrintMsecs = System.currentTimeMillis() + 15000;
             int partitionIndex = 0;
             int numPartitions = getPartitionStore().getNumPartitions();
-            while (!partitionIdQueue.isEmpty()) {
-              Integer partitionId = partitionIdQueue.poll();
-              if (partitionId == null) {
+            while (true) {
+              Partition<I, V, E> partition =
+                  getPartitionStore().getNextPartition();
+              if (partition == null) {
                 break;
               }
 
-              Partition<I, V, E> partition =
-                  getPartitionStore().getOrCreatePartition(partitionId);
               long vertices = 0;
               long edges = 0;
               long partitionEdgeCount = partition.getEdgeCount();
@@ -1415,11 +1274,13 @@ public class BspServiceWorker<I extends WritableComparable,
     workerContext.write(checkpointOutputStream);
     getContext().progress();
 
+    // TODO: checkpointing messages along with vertices to avoid multiple loads
+    //       of a partition when out-of-core is enabled.
     for (Integer partitionId : getPartitionStore().getPartitionIds()) {
       // write messages
       checkpointOutputStream.writeInt(partitionId);
-      getServerData().getCurrentMessageStore().writePartition(
-          checkpointOutputStream, partitionId);
+      getServerData().getCurrentMessageStore()
+          .writePartition(checkpointOutputStream, partitionId);
       getContext().progress();
 
     }
@@ -1462,8 +1323,8 @@ public class BspServiceWorker<I extends WritableComparable,
    * @throws IOException
    */
   private Path createCheckpointFilePathSafe(String name) throws IOException {
-    Path validFilePath = new Path(getCheckpointBasePath(getSuperstep()) + "." +
-        getTaskPartition() + name);
+    Path validFilePath = new Path(getCheckpointBasePath(getSuperstep()) + '.' +
+        getWorkerId(workerInfo) + name);
     // Remove these files if they already exist (shouldn't though, unless
     // of previous failure of this worker)
     if (getFs().delete(validFilePath, false)) {
@@ -1481,8 +1342,8 @@ public class BspServiceWorker<I extends WritableComparable,
    * @return fill file path to checkpoint file
    */
   private Path getSavedCheckpoint(long superstep, String name) {
-    return new Path(getSavedCheckpointBasePath(superstep) + "." +
-        getTaskPartition() + name);
+    return new Path(getSavedCheckpointBasePath(superstep) + '.' +
+        getWorkerId(workerInfo) + name);
   }
 
   /**
@@ -1495,10 +1356,7 @@ public class BspServiceWorker<I extends WritableComparable,
         GiraphConstants.NUM_CHECKPOINT_IO_THREADS.get(getConfiguration()),
         numPartitions);
 
-    final Queue<Integer> partitionIdQueue =
-        (numPartitions == 0) ? new LinkedList<Integer>() :
-            new ArrayBlockingQueue<Integer>(numPartitions);
-    Iterables.addAll(partitionIdQueue, getPartitionStore().getPartitionIds());
+    getPartitionStore().startIteration();
 
     final CompressionCodec codec =
         new CompressionCodecFactory(getConfiguration())
@@ -1515,13 +1373,14 @@ public class BspServiceWorker<I extends WritableComparable,
 
           @Override
           public Void call() throws Exception {
-            while (!partitionIdQueue.isEmpty()) {
-              Integer partitionId = partitionIdQueue.poll();
-              if (partitionId == null) {
+            while (true) {
+              Partition<I, V, E> partition =
+                  getPartitionStore().getNextPartition();
+              if (partition == null) {
                 break;
               }
               Path path =
-                  createCheckpointFilePathSafe("_" + partitionId +
+                  createCheckpointFilePathSafe("_" + partition.getId() +
                       CheckpointingUtils.CHECKPOINT_VERTICES_POSTFIX);
 
               FSDataOutputStream uncompressedStream =
@@ -1532,8 +1391,6 @@ public class BspServiceWorker<I extends WritableComparable,
                   new DataOutputStream(
                       codec.createOutputStream(uncompressedStream));
 
-              Partition<I, V, E> partition =
-                  getPartitionStore().getOrCreatePartition(partitionId);
 
               partition.write(stream);
 
@@ -1659,7 +1516,8 @@ public class BspServiceWorker<I extends WritableComparable,
 
       // Load global stats and superstep classes
       GlobalStats globalStats = new GlobalStats();
-      SuperstepClasses superstepClasses = new SuperstepClasses();
+      SuperstepClasses superstepClasses = SuperstepClasses.createToRead(
+          getConfiguration());
       String finalizedCheckpointPath = getSavedCheckpointBasePath(superstep) +
           CheckpointingUtils.CHECKPOINT_FINALIZED_POSTFIX;
       DataInputStream finalizedStream =
@@ -1669,10 +1527,12 @@ public class BspServiceWorker<I extends WritableComparable,
       getConfiguration().updateSuperstepClasses(superstepClasses);
       getServerData().resetMessageStores();
 
+      // TODO: checkpointing messages along with vertices to avoid multiple
+      //       loads of a partition when out-of-core is enabled.
       for (int i = 0; i < partitions; i++) {
         int partitionId = checkpointStream.readInt();
-        getServerData().getCurrentMessageStore().readFieldsForPartition(
-            checkpointStream, partitionId);
+        getServerData().getCurrentMessageStore()
+            .readFieldsForPartition(checkpointStream, partitionId);
       }
 
       List<Writable> w2wMessages = (List<Writable>) WritableUtils.readList(
@@ -1690,12 +1550,12 @@ public class BspServiceWorker<I extends WritableComparable,
       // Communication service needs to setup the connections prior to
       // processing vertices
 /*if[HADOOP_NON_SECURE]
-    workerClient.setup();
+      workerClient.setup();
 else[HADOOP_NON_SECURE]*/
       workerClient.setup(getConfiguration().authenticate());
 /*end[HADOOP_NON_SECURE]*/
       return new VertexEdgeCount(globalStats.getVertexCount(),
-          globalStats.getEdgeCount());
+          globalStats.getEdgeCount(), 0);
 
     } catch (IOException e) {
       throw new RuntimeException(
@@ -1717,7 +1577,8 @@ else[HADOOP_NON_SECURE]*/
     Collections.shuffle(randomEntryList);
     WorkerClientRequestProcessor<I, V, E> workerClientRequestProcessor =
         new NettyWorkerClientRequestProcessor<I, V, E>(getContext(),
-            getConfiguration(), this);
+            getConfiguration(), this,
+            false /* useOneMessageToManyIdsEncoding */);
     for (Entry<WorkerInfo, List<Integer>> workerPartitionList :
       randomEntryList) {
       for (Integer partitionId : workerPartitionList.getValue()) {
@@ -1882,6 +1743,10 @@ else[HADOOP_NON_SECURE]*/
       }
       partitionExchangeChildrenChanged.signal();
       foundEvent = true;
+    } else if (event.getPath().contains(MEMORY_OBSERVER_DIR) &&
+        event.getType() == EventType.NodeChildrenChanged) {
+      memoryObserver.callGc();
+      foundEvent = true;
     }
 
     return foundEvent;
@@ -1953,5 +1818,16 @@ else[HADOOP_NON_SECURE]*/
           globalStats);
     }
     return globalStats;
+  }
+
+  @Override
+  public WorkerInputSplitsHandler getInputSplitsHandler() {
+    return inputSplitsHandler;
+  }
+
+  @Override
+  public void addressesAndPartitionsReceived(
+      AddressesAndPartitionsWritable addressesAndPartitions) {
+    addressesAndPartitionsHolder.offer(addressesAndPartitions);
   }
 }

@@ -19,6 +19,9 @@ package org.apache.giraph.conf;
 
 import org.apache.giraph.aggregators.AggregatorWriter;
 import org.apache.giraph.aggregators.TextAggregatorWriter;
+import org.apache.giraph.bsp.BspOutputFormat;
+import org.apache.giraph.bsp.checkpoints.CheckpointSupportedChecker;
+import org.apache.giraph.bsp.checkpoints.DefaultCheckpointSupportedChecker;
 import org.apache.giraph.combiner.MessageCombiner;
 import org.apache.giraph.comm.messages.InMemoryMessageStoreFactory;
 import org.apache.giraph.comm.messages.MessageEncodeAndStoreType;
@@ -30,8 +33,7 @@ import org.apache.giraph.edge.OutEdges;
 import org.apache.giraph.factories.ComputationFactory;
 import org.apache.giraph.factories.DefaultComputationFactory;
 import org.apache.giraph.factories.DefaultEdgeValueFactory;
-import org.apache.giraph.factories.DefaultIncomingMessageValueFactory;
-import org.apache.giraph.factories.DefaultOutgoingMessageValueFactory;
+import org.apache.giraph.factories.DefaultMessageValueFactory;
 import org.apache.giraph.factories.DefaultVertexIdFactory;
 import org.apache.giraph.factories.DefaultVertexValueFactory;
 import org.apache.giraph.factories.EdgeValueFactory;
@@ -43,6 +45,7 @@ import org.apache.giraph.graph.DefaultVertex;
 import org.apache.giraph.graph.DefaultVertexResolver;
 import org.apache.giraph.graph.DefaultVertexValueCombiner;
 import org.apache.giraph.graph.Language;
+import org.apache.giraph.graph.MapperObserver;
 import org.apache.giraph.graph.Vertex;
 import org.apache.giraph.graph.VertexResolver;
 import org.apache.giraph.graph.VertexValueCombiner;
@@ -57,15 +60,21 @@ import org.apache.giraph.io.filters.EdgeInputFilter;
 import org.apache.giraph.io.filters.VertexInputFilter;
 import org.apache.giraph.job.DefaultGiraphJobRetryChecker;
 import org.apache.giraph.job.DefaultJobObserver;
+import org.apache.giraph.job.DefaultJobProgressTrackerService;
 import org.apache.giraph.job.GiraphJobObserver;
 import org.apache.giraph.job.GiraphJobRetryChecker;
 import org.apache.giraph.job.HaltApplicationUtils;
+import org.apache.giraph.job.JobProgressTrackerService;
 import org.apache.giraph.mapping.MappingStore;
 import org.apache.giraph.mapping.MappingStoreOps;
 import org.apache.giraph.mapping.translate.TranslateEdge;
 import org.apache.giraph.master.DefaultMasterCompute;
 import org.apache.giraph.master.MasterCompute;
 import org.apache.giraph.master.MasterObserver;
+import org.apache.giraph.ooc.persistence.OutOfCoreDataAccessor;
+import org.apache.giraph.ooc.persistence.LocalDiskDataAccessor;
+import org.apache.giraph.ooc.policy.OutOfCoreOracle;
+import org.apache.giraph.ooc.policy.ThresholdBasedOracle;
 import org.apache.giraph.partition.GraphPartitionerFactory;
 import org.apache.giraph.partition.HashPartitionerFactory;
 import org.apache.giraph.partition.Partition;
@@ -75,6 +84,7 @@ import org.apache.giraph.worker.WorkerContext;
 import org.apache.giraph.worker.WorkerObserver;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableComparable;
+import org.apache.hadoop.mapreduce.OutputFormat;
 
 import static java.util.concurrent.TimeUnit.MINUTES;
 import static java.util.concurrent.TimeUnit.SECONDS;
@@ -86,14 +96,16 @@ import static java.util.concurrent.TimeUnit.SECONDS;
 public interface GiraphConstants {
   /** 1KB in bytes */
   int ONE_KB = 1024;
+  /** 1MB in bytes */
+  int ONE_MB = 1024 * 1024;
 
   /** Mapping related information */
-  ClassConfOption<? extends MappingStore> MAPPING_STORE_CLASS =
+  ClassConfOption<MappingStore> MAPPING_STORE_CLASS =
       ClassConfOption.create("giraph.mappingStoreClass", null,
           MappingStore.class, "MappingStore Class");
 
   /** Class to use for performing read operations on mapping store */
-  ClassConfOption<? extends MappingStoreOps> MAPPING_STORE_OPS_CLASS =
+  ClassConfOption<MappingStoreOps> MAPPING_STORE_OPS_CLASS =
       ClassConfOption.create("giraph.mappingStoreOpsClass", null,
           MappingStoreOps.class, "MappingStoreOps class");
 
@@ -167,17 +179,11 @@ public interface GiraphConstants {
       ClassConfOption.create("giraph.edgeValueFactoryClass",
           DefaultEdgeValueFactory.class, EdgeValueFactory.class,
           "Edge value factory class - optional");
-  /** Incoming message value factory class - optional */
-  ClassConfOption<MessageValueFactory>
-  INCOMING_MESSAGE_VALUE_FACTORY_CLASS =
-      ClassConfOption.create("giraph.incomingMessageValueFactoryClass",
-          DefaultIncomingMessageValueFactory.class, MessageValueFactory.class,
-          "Incoming message value factory class - optional");
   /** Outgoing message value factory class - optional */
   ClassConfOption<MessageValueFactory>
   OUTGOING_MESSAGE_VALUE_FACTORY_CLASS =
       ClassConfOption.create("giraph.outgoingMessageValueFactoryClass",
-          DefaultOutgoingMessageValueFactory.class, MessageValueFactory.class,
+          DefaultMessageValueFactory.class, MessageValueFactory.class,
           "Outgoing message value factory class - optional");
 
   /** Vertex edges class - optional */
@@ -203,6 +209,10 @@ public interface GiraphConstants {
   ClassConfOption<WorkerObserver> WORKER_OBSERVER_CLASSES =
       ClassConfOption.create("giraph.worker.observers", null,
           WorkerObserver.class, "Classes for Worker Observer - optional");
+  /** Classes for Mapper Observer - optional */
+  ClassConfOption<MapperObserver> MAPPER_OBSERVER_CLASSES =
+      ClassConfOption.create("giraph.mapper.observers", null,
+          MapperObserver.class, "Classes for Mapper Observer - optional");
   /** Message combiner class - optional */
   ClassConfOption<MessageCombiner> MESSAGE_COMBINER_CLASS =
       ClassConfOption.create("giraph.messageCombinerClass", null,
@@ -379,10 +389,6 @@ public interface GiraphConstants {
   ClassConfOption<Writable> EDGE_VALUE_CLASS =
       ClassConfOption.create("giraph.edgeValueClass", null, Writable.class,
           "Edge value class");
-  /** Incoming message value class */
-  ClassConfOption<Writable> INCOMING_MESSAGE_VALUE_CLASS =
-      ClassConfOption.create("giraph.incomingMessageValueClass", null,
-          Writable.class, "Incoming message value class");
   /** Outgoing message value class */
   ClassConfOption<Writable> OUTGOING_MESSAGE_VALUE_CLASS =
       ClassConfOption.create("giraph.outgoingMessageValueClass", null,
@@ -529,11 +535,6 @@ public interface GiraphConstants {
       new IntConfOption("giraph.zkServerlistPollMsecs", SECONDS.toMillis(3),
           "Polling interval to check for the ZooKeeper server data");
 
-  /** Number of nodes (not tasks) to run Zookeeper on */
-  IntConfOption ZOOKEEPER_SERVER_COUNT =
-      new IntConfOption("giraph.zkServerCount", 1,
-          "Number of nodes (not tasks) to run Zookeeper on");
-
   /** ZooKeeper port to use */
   IntConfOption ZOOKEEPER_SERVER_PORT =
       new IntConfOption("giraph.zkServerPort", 22181, "ZooKeeper port to use");
@@ -629,6 +630,15 @@ public interface GiraphConstants {
       new StrConfOption("giraph.nettyCompressionAlgorithm", "",
           "Which compression algorithm to use in netty");
 
+  /**
+   * Whether netty should pro-actively read requests and feed them to its
+   * processing pipeline
+   */
+  BooleanConfOption NETTY_AUTO_READ =
+      new BooleanConfOption("giraph.nettyAutoRead", true,
+          "Whether netty should pro-actively read requests and feed them to " +
+              "its processing pipeline");
+
   /** Max resolve address attempts */
   IntConfOption MAX_RESOLVE_ADDRESS_ATTEMPTS =
       new IntConfOption("giraph.maxResolveAddressAttempts", 5,
@@ -663,6 +673,11 @@ public interface GiraphConstants {
   IntConfOption NETTY_MAX_CONNECTION_FAILURES =
       new IntConfOption("giraph.nettyMaxConnectionFailures", 1000,
           "Netty max connection failures");
+
+  /** How long to wait before trying to reconnect failed connections */
+  IntConfOption WAIT_TIME_BETWEEN_CONNECTION_RETRIES_MS =
+      new IntConfOption("giraph.waitTimeBetweenConnectionRetriesMs", 500,
+          "");
 
   /** Initial port to start using for the IPC communication */
   IntConfOption IPC_INITIAL_PORT =
@@ -720,6 +735,13 @@ public interface GiraphConstants {
           "initial per partition buffers. If this value is A, message " +
           "request size is M, and a worker has P partitions, than its " +
           "initial partition buffer size will be (M / P) * (1 + A).");
+
+
+  /** Warn if msg request size exceeds default size by this factor */
+  FloatConfOption REQUEST_SIZE_WARNING_THRESHOLD = new FloatConfOption(
+      "giraph.msgRequestWarningThreshold", 2.0f,
+      "If request sizes are bigger than the buffer size by this factor " +
+      "warnings are printed to the log and to the command line");
 
   /** Maximum size of vertices (in bytes) per peer before flush */
   IntConfOption MAX_VERTEX_REQUEST_SIZE =
@@ -849,22 +871,20 @@ public interface GiraphConstants {
       new FloatConfOption("giraph.masterPartitionCountMultiplier", 1.0f,
           "Multiplier for the current workers squared");
 
+  /** Minimum number of partitions to have per compute thread */
+  IntConfOption MIN_PARTITIONS_PER_COMPUTE_THREAD =
+      new IntConfOption("giraph.minPartitionsPerComputeThread", 1,
+          "Minimum number of partitions to have per compute thread");
+
   /** Overrides default partition count calculation if not -1 */
   IntConfOption USER_PARTITION_COUNT =
       new IntConfOption("giraph.userPartitionCount", -1,
           "Overrides default partition count calculation if not -1");
 
   /** Vertex key space size for
-   * {@link org.apache.giraph.partition.SimpleWorkerPartitioner}
+   * {@link org.apache.giraph.partition.WorkerGraphPartitionerImpl}
    */
   String PARTITION_VERTEX_KEY_SPACE_SIZE = "giraph.vertexKeySpaceSize";
-
-  /** Java opts passed to ZooKeeper startup */
-  StrConfOption ZOOKEEPER_JAVA_OPTS =
-      new StrConfOption("giraph.zkJavaOpts",
-          "-Xmx512m -XX:ParallelGCThreads=4 -XX:+UseConcMarkSweepGC " +
-          "-XX:CMSInitiatingOccupancyFraction=70 -XX:MaxGCPauseMillis=100",
-          "Java opts passed to ZooKeeper startup");
 
   /**
    *  How often to checkpoint (i.e. 0, means no checkpoint,
@@ -923,28 +943,6 @@ public interface GiraphConstants {
           "This directory has/stores the available checkpoint files in HDFS.");
 
   /**
-   * Comma-separated list of directories in the local file system for
-   * out-of-core messages.
-   */
-  StrConfOption MESSAGES_DIRECTORY =
-      new StrConfOption("giraph.messagesDirectory", "_bsp/_messages/",
-          "Comma-separated list of directories in the local file system for " +
-          "out-of-core messages.");
-
-  /**
-   * If using out-of-core messaging, it tells how much messages do we keep
-   * in memory.
-   */
-  IntConfOption MAX_MESSAGES_IN_MEMORY =
-      new IntConfOption("giraph.maxMessagesInMemory", 1000000,
-          "If using out-of-core messaging, it tells how much messages do we " +
-          "keep in memory.");
-  /** Size of buffer when reading and writing messages out-of-core. */
-  IntConfOption MESSAGES_BUFFER_SIZE =
-      new IntConfOption("giraph.messagesBufferSize", 8 * ONE_KB,
-          "Size of buffer when reading and writing messages out-of-core.");
-
-  /**
    * Comma-separated list of directories in the local filesystem for
    * out-of-core partitions.
    */
@@ -953,41 +951,68 @@ public interface GiraphConstants {
           "Comma-separated list of directories in the local filesystem for " +
           "out-of-core partitions.");
 
+  /**
+   * Number of IO threads used in out-of-core mechanism. If local disk is used
+   * for spilling data to and reading data from, this number should be equal to
+   * the number of available disks on each machine. In such case, one should
+   * use giraph.partitionsDirectory to specify directories mounted on different
+   * disks.
+   */
+  IntConfOption NUM_OUT_OF_CORE_THREADS =
+      new IntConfOption("giraph.numOutOfCoreThreads", 1, "Number of IO " +
+          "threads used in out-of-core mechanism. If using local disk to " +
+          "spill data, this should be equal to the number of available " +
+          "disks. In such case, use giraph.partitionsDirectory to specify " +
+          "mount points on different disks.");
+
   /** Enable out-of-core graph. */
   BooleanConfOption USE_OUT_OF_CORE_GRAPH =
       new BooleanConfOption("giraph.useOutOfCoreGraph", false,
           "Enable out-of-core graph.");
+
+  /** Data accessor resource/object */
+  ClassConfOption<OutOfCoreDataAccessor> OUT_OF_CORE_DATA_ACCESSOR =
+      ClassConfOption.create("giraph.outOfCoreDataAccessor",
+          LocalDiskDataAccessor.class, OutOfCoreDataAccessor.class,
+          "Data accessor used in out-of-core computation (local-disk, " +
+              "in-memory, HDFS, etc.)");
+
+  /**
+   * Out-of-core oracle that is to be used for adaptive out-of-core engine. If
+   * the `MAX_PARTITIONS_IN_MEMORY` is already set, this will be over-written
+   * to be `FixedPartitionsOracle`.
+   */
+  ClassConfOption<OutOfCoreOracle> OUT_OF_CORE_ORACLE =
+      ClassConfOption.create("giraph.outOfCoreOracle",
+          ThresholdBasedOracle.class, OutOfCoreOracle.class,
+          "Out-of-core oracle that is to be used for adaptive out-of-core " +
+              "engine");
+
+  /** Maximum number of partitions to hold in memory for each worker. */
+  IntConfOption MAX_PARTITIONS_IN_MEMORY =
+      new IntConfOption("giraph.maxPartitionsInMemory", 0,
+          "Maximum number of partitions to hold in memory for each worker. By" +
+              " default it is set to 0 (for adaptive out-of-core mechanism");
 
   /** Directory to write YourKit snapshots to */
   String YOURKIT_OUTPUT_DIR = "giraph.yourkit.outputDir";
   /** Default directory to write YourKit snapshots to */
   String YOURKIT_OUTPUT_DIR_DEFAULT = "/tmp/giraph/%JOB_ID%/%TASK_ID%";
 
-  /** Maximum number of partitions to hold in memory for each worker. */
-  IntConfOption MAX_PARTITIONS_IN_MEMORY =
-      new IntConfOption("giraph.maxPartitionsInMemory", 10,
-          "Maximum number of partitions to hold in memory for each worker.");
-
-  /** Set number of sticky partitions if sticky mode is enabled.  */
-  IntConfOption MAX_STICKY_PARTITIONS =
-      new IntConfOption("giraph.stickyPartitions", 0,
-          "Set number of sticky partitions if sticky mode is enabled.");
-
   /** Keep the zookeeper output for debugging? Default is to remove it. */
   BooleanConfOption KEEP_ZOOKEEPER_DATA =
       new BooleanConfOption("giraph.keepZooKeeperData", false,
           "Keep the zookeeper output for debugging? Default is to remove it.");
-
-  /** Default ZooKeeper tick time. */
-  int DEFAULT_ZOOKEEPER_TICK_TIME = 6000;
-  /** Default ZooKeeper init limit (in ticks). */
-  int DEFAULT_ZOOKEEPER_INIT_LIMIT = 10;
-  /** Default ZooKeeper sync limit (in ticks). */
-  int DEFAULT_ZOOKEEPER_SYNC_LIMIT = 5;
   /** Default ZooKeeper snap count. */
   int DEFAULT_ZOOKEEPER_SNAP_COUNT = 50000;
+  /** Default ZooKeeper tick time. */
+  int DEFAULT_ZOOKEEPER_TICK_TIME = 6000;
   /** Default ZooKeeper maximum client connections. */
   int DEFAULT_ZOOKEEPER_MAX_CLIENT_CNXNS = 10000;
+  /** Number of snapshots to be retained after purge */
+  int ZOOKEEPER_SNAP_RETAIN_COUNT = 3;
+  /** Zookeeper purge interval in hours */
+  int ZOOKEEPER_PURGE_INTERVAL = 1;
   /** ZooKeeper minimum session timeout */
   IntConfOption ZOOKEEPER_MIN_SESSION_TIMEOUT =
       new IntConfOption("giraph.zKMinSessionTimeout", MINUTES.toMillis(10),
@@ -996,10 +1021,12 @@ public interface GiraphConstants {
   IntConfOption ZOOKEEPER_MAX_SESSION_TIMEOUT =
       new IntConfOption("giraph.zkMaxSessionTimeout", MINUTES.toMillis(15),
           "ZooKeeper maximum session timeout");
+
   /** ZooKeeper force sync */
   BooleanConfOption ZOOKEEPER_FORCE_SYNC =
       new BooleanConfOption("giraph.zKForceSync", false,
           "ZooKeeper force sync");
+
   /** ZooKeeper skip ACLs */
   BooleanConfOption ZOOKEEPER_SKIP_ACL =
       new BooleanConfOption("giraph.ZkSkipAcl", true, "ZooKeeper skip ACLs");
@@ -1132,6 +1159,13 @@ public interface GiraphConstants {
       new BooleanConfOption("giraph.trackJobProgressOnClient", false,
           "Whether to track job progress on client or not");
 
+  /** Class to use to track job progress on client */
+  ClassConfOption<JobProgressTrackerService> JOB_PROGRESS_TRACKER_CLASS =
+      ClassConfOption.create("giraph.jobProgressTrackerClass",
+          DefaultJobProgressTrackerService.class,
+          JobProgressTrackerService.class,
+          "Class to use to track job progress on client");
+
   /** Number of retries for creating the HDFS files */
   IntConfOption HDFS_FILE_CREATION_RETRIES =
       new IntConfOption("giraph.hdfs.file.creation.retries", 10,
@@ -1150,7 +1184,7 @@ public interface GiraphConstants {
   /**
    * Compression algorithm to be used for checkpointing.
    * Defined by extension for hadoop compatibility reasons.
-  */
+   */
   StrConfOption CHECKPOINT_COMPRESSION_CODEC =
       new StrConfOption("giraph.checkpoint.compression.codec",
           ".deflate",
@@ -1158,12 +1192,37 @@ public interface GiraphConstants {
               "storing checkpoint. Available options include but " +
               "not restricted to: .deflate, .gz, .bz2, .lzo");
 
+  /**
+   * Defines if and when checkpointing is supported by this job.
+   * By default checkpointing is always supported unless output during the
+   * computation is enabled.
+   */
+  ClassConfOption<CheckpointSupportedChecker> CHECKPOINT_SUPPORTED_CHECKER =
+      ClassConfOption.create("giraph.checkpoint.supported.checker",
+          DefaultCheckpointSupportedChecker.class,
+          CheckpointSupportedChecker.class,
+          "This is the way to specify if checkpointing is " +
+              "supported by the job");
+
+
   /** Number of threads to use in async message store, 0 means
    * we should not use async message processing */
   IntConfOption ASYNC_MESSAGE_STORE_THREADS_COUNT =
       new IntConfOption("giraph.async.message.store.threads", 0,
           "Number of threads to be used in async message store.");
 
+  /** Output format class for hadoop to use (for committing) */
+  ClassConfOption<OutputFormat> HADOOP_OUTPUT_FORMAT_CLASS =
+      ClassConfOption.create("giraph.hadoopOutputFormatClass",
+          BspOutputFormat.class, OutputFormat.class,
+          "Output format class for hadoop to use (for committing)");
 
+  /**
+   * For worker to worker communication we can use IPs or host names, by
+   * default prefer IPs.
+   */
+  BooleanConfOption PREFER_IP_ADDRESSES =
+      new BooleanConfOption("giraph.preferIP", false,
+      "Prefer IP addresses instead of host names");
 }
 // CHECKSTYLE: resume InterfaceIsTypeCheck

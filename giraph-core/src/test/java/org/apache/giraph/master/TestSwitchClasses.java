@@ -140,9 +140,6 @@ public class TestSwitchClasses {
           break;
         case 4:
           setComputation(Computation1.class);
-          // message types removed
-          setIncomingMessage(null);
-          setOutgoingMessage(null);
           break;
         default:
           haltComputation();
@@ -198,7 +195,7 @@ public class TestSwitchClasses {
   }
 
   public static class MinimumMessageCombiner
-      extends MessageCombiner<IntWritable,
+      implements MessageCombiner<IntWritable,
                   IntWritable> {
     @Override
     public void combine(IntWritable vertexIndex, IntWritable originalMessage,
@@ -214,7 +211,7 @@ public class TestSwitchClasses {
   }
 
   public static class SumMessageCombiner
-      extends MessageCombiner<IntWritable, IntWritable> {
+      implements MessageCombiner<IntWritable, IntWritable> {
     @Override
     public void combine(IntWritable vertexIndex, IntWritable originalMessage,
         IntWritable messageToCombine) {

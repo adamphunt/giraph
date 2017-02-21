@@ -18,14 +18,19 @@
 
 package org.apache.giraph.master;
 
+import java.util.List;
+
 import org.apache.giraph.aggregators.Aggregator;
 import org.apache.giraph.bsp.CentralizedServiceMaster;
 import org.apache.giraph.combiner.MessageCombiner;
 import org.apache.giraph.conf.DefaultImmutableClassesGiraphConfigurable;
+import org.apache.giraph.conf.MessageClasses;
 import org.apache.giraph.graph.Computation;
 import org.apache.giraph.graph.GraphState;
 import org.apache.giraph.reducers.ReduceOperation;
+import org.apache.giraph.worker.WorkerInfo;
 import org.apache.hadoop.io.Writable;
+import org.apache.hadoop.io.WritableComparable;
 import org.apache.hadoop.mapreduce.Mapper;
 
 /**
@@ -124,6 +129,15 @@ public abstract class MasterCompute
   }
 
   /**
+   * Get list of workers
+   *
+   * @return List of workers
+   */
+  public final List<WorkerInfo> getWorkerInfoList() {
+    return serviceMaster.getWorkerInfoList();
+  }
+
+  /**
    * Set Computation class to be used
    *
    * @param computationClass Computation class
@@ -173,8 +187,10 @@ public abstract class MasterCompute
 
   /**
    * Set incoming message class to be used
+   *
    * @param incomingMessageClass incoming message class
    */
+  @Deprecated
   public final void setIncomingMessage(
       Class<? extends Writable> incomingMessageClass) {
     superstepClasses.setIncomingMessageClass(incomingMessageClass);
@@ -182,6 +198,7 @@ public abstract class MasterCompute
 
   /**
    * Set outgoing message class to be used
+   *
    * @param outgoingMessageClass outgoing message class
    */
   public final void setOutgoingMessage(
@@ -189,16 +206,27 @@ public abstract class MasterCompute
     superstepClasses.setOutgoingMessageClass(outgoingMessageClass);
   }
 
-  @Override
-  public final <S, R extends Writable> void registerReduce(
-      String name, ReduceOperation<S, R> reduceOp) {
-    serviceMaster.getGlobalCommHandler().registerReduce(name, reduceOp);
+  /**
+   * Set outgoing message classes to be used
+   *
+   * @param outgoingMessageClasses outgoing message classes
+   */
+  public void setOutgoingMessageClasses(
+      MessageClasses<? extends WritableComparable, ? extends Writable>
+        outgoingMessageClasses) {
+    superstepClasses.setOutgoingMessageClasses(outgoingMessageClasses);
   }
 
   @Override
-  public final <S, R extends Writable> void registerReduce(
+  public final <S, R extends Writable> void registerReducer(
+      String name, ReduceOperation<S, R> reduceOp) {
+    serviceMaster.getGlobalCommHandler().registerReducer(name, reduceOp);
+  }
+
+  @Override
+  public final <S, R extends Writable> void registerReducer(
       String name, ReduceOperation<S, R> reduceOp, R globalInitialValue) {
-    serviceMaster.getGlobalCommHandler().registerReduce(
+    serviceMaster.getGlobalCommHandler().registerReducer(
         name, reduceOp, globalInitialValue);
   }
 
@@ -252,15 +280,15 @@ public abstract class MasterCompute
     serviceMaster.getJobProgressTracker().logInfo(line);
   }
 
-  final void setGraphState(GraphState graphState) {
+  public final void setGraphState(GraphState graphState) {
     this.graphState = graphState;
   }
 
-  final void setMasterService(CentralizedServiceMaster serviceMaster) {
+  public final void setMasterService(CentralizedServiceMaster serviceMaster) {
     this.serviceMaster = serviceMaster;
   }
 
-  final void setSuperstepClasses(SuperstepClasses superstepClasses) {
+  public final void setSuperstepClasses(SuperstepClasses superstepClasses) {
     this.superstepClasses = superstepClasses;
   }
 }

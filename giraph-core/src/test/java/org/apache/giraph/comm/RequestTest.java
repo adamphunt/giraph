@@ -20,6 +20,7 @@ package org.apache.giraph.comm;
 
 import org.apache.giraph.comm.netty.NettyClient;
 import org.apache.giraph.comm.netty.NettyServer;
+import org.apache.giraph.comm.netty.handler.AckSignalFlag;
 import org.apache.giraph.comm.netty.handler.WorkerRequestServerHandler;
 import org.apache.giraph.comm.requests.SendPartitionMutationsRequest;
 import org.apache.giraph.comm.requests.SendVertexRequest;
@@ -55,7 +56,7 @@ import com.google.common.collect.Maps;
 import java.io.IOException;
 import java.util.Map;
 import java.util.Map.Entry;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
@@ -79,7 +80,7 @@ public class RequestTest {
   private WorkerInfo workerInfo;
 
   @Before
-  public void setUp() throws IOException {
+  public void setUp() {
     // Setup the conf
     GiraphConfiguration tmpConf = new GiraphConfiguration();
     GiraphConstants.COMPUTATION_CLASS.set(tmpConf, IntNoOpComputation.class);
@@ -97,15 +98,17 @@ public class RequestTest {
         new WorkerRequestServerHandler.Factory(serverData), workerInfo,
             context, new MockExceptionHandler());
     server.start();
-    workerInfo.setInetSocketAddress(server.getMyAddress());
+
+    workerInfo.setInetSocketAddress(server.getMyAddress(), server.getLocalHostOrIp());
     client = new NettyClient(context, conf, new WorkerInfo(),
         new MockExceptionHandler());
+    server.setFlowControl(client.getFlowControl());
     client.connectAllAddresses(
         Lists.<WorkerInfo>newArrayList(workerInfo));
   }
 
   @Test
-  public void sendVertexPartition() throws IOException {
+  public void sendVertexPartition() {
     // Data to send
     int partitionId = 13;
     Partition<IntWritable, IntWritable, IntWritable> partition =
@@ -132,7 +135,7 @@ public class RequestTest {
     assertTrue(partitionStore.hasPartition(partitionId));
     int total = 0;
     Partition<IntWritable, IntWritable, IntWritable> partition2 =
-        partitionStore.getOrCreatePartition(partitionId);
+        partitionStore.removePartition(partitionId);
     for (Vertex<IntWritable, IntWritable, IntWritable> vertex : partition2) {
       total += vertex.getId().get();
     }
@@ -142,7 +145,7 @@ public class RequestTest {
   }
 
   @Test
-  public void sendWorkerMessagesRequest() throws IOException {
+  public void sendWorkerMessagesRequest() {
     // Data to send
     PairList<Integer, VertexIdMessages<IntWritable,
             IntWritable>>
@@ -241,7 +244,7 @@ public class RequestTest {
   }
 
   @Test
-  public void sendPartitionMutationsRequest() throws IOException {
+  public void sendPartitionMutationsRequest() {
     // Data to send
     int partitionId = 19;
     Map<IntWritable, VertexMutations<IntWritable, IntWritable,
@@ -272,7 +275,8 @@ public class RequestTest {
     // Send the request
     SendPartitionMutationsRequest<IntWritable, IntWritable, IntWritable>
         request = new SendPartitionMutationsRequest<IntWritable, IntWritable,
-        IntWritable>(partitionId, vertexIdMutations);
+        IntWritable>(partitionId,
+        vertexIdMutations);
     GiraphMetrics.init(conf);
     client.sendWritableRequest(workerInfo.getTaskId(), request);
     client.waitAllRequests();
@@ -282,25 +286,27 @@ public class RequestTest {
     server.stop();
 
     // Check the output
-    ConcurrentHashMap<IntWritable, VertexMutations<IntWritable, IntWritable,
-    IntWritable>> inVertexIdMutations =
-        serverData.getVertexMutations();
+    ConcurrentMap<IntWritable,
+        VertexMutations<IntWritable, IntWritable, IntWritable>>
+        inVertexIdMutations =
+        serverData.getPartitionMutations().get(partitionId);
     int keySum = 0;
-    for (Entry<IntWritable, VertexMutations<IntWritable, IntWritable,
-        IntWritable>> entry :
-          inVertexIdMutations.entrySet()) {
+    for (Entry<IntWritable,
+        VertexMutations<IntWritable, IntWritable, IntWritable>> entry :
+        inVertexIdMutations
+        .entrySet()) {
       synchronized (entry.getValue()) {
         keySum += entry.getKey().get();
         int vertexValueSum = 0;
-        for (Vertex<IntWritable, IntWritable, IntWritable>
-        vertex : entry.getValue().getAddedVertexList()) {
+        for (Vertex<IntWritable, IntWritable, IntWritable> vertex : entry
+            .getValue().getAddedVertexList()) {
           vertexValueSum += vertex.getValue().get();
         }
         assertEquals(3, vertexValueSum);
         assertEquals(2, entry.getValue().getRemovedVertexCount());
         int removeEdgeValueSum = 0;
-        for (Edge<IntWritable, IntWritable> edge :
-            entry.getValue().getAddedEdgeList()) {
+        for (Edge<IntWritable, IntWritable> edge : entry.getValue()
+            .getAddedEdgeList()) {
           removeEdgeValueSum += edge.getValue().get();
         }
         assertEquals(20, removeEdgeValueSum);

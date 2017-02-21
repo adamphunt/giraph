@@ -103,7 +103,7 @@ public class RequestFailureTest {
     return request;
   }
 
-  private void checkResult(int numRequests) throws IOException {
+  private void checkResult(int numRequests) {
     // Check the output
     Iterable<IntWritable> vertices =
         serverData.getIncomingMessageStore().getPartitionDestinationVertices(0);
@@ -144,7 +144,7 @@ public class RequestFailureTest {
   @Test
   public void resendRequest() throws IOException {
     // Force a drop of the first request
-    GiraphConstants.NETTY_SIMULATE_FIRST_REQUEST_CLOSED.set(conf, true);
+    GiraphConstants.NETTY_SIMULATE_FIRST_REQUEST_CLOSED.set(conf, false);
     // One second to finish a request
     GiraphConstants.MAX_REQUEST_MILLISECONDS.set(conf, 1000);
     // Loop every 2 seconds
@@ -162,9 +162,10 @@ public class RequestFailureTest {
         new WorkerRequestServerHandler.Factory(serverData), workerInfo,
             context, new MockExceptionHandler());
     server.start();
-    workerInfo.setInetSocketAddress(server.getMyAddress());
+    workerInfo.setInetSocketAddress(server.getMyAddress(), server.getLocalHostOrIp());
     client = new NettyClient(context, conf, new WorkerInfo(),
         new MockExceptionHandler());
+    server.setFlowControl(client.getFlowControl());
     client.connectAllAddresses(
         Lists.<WorkerInfo>newArrayList(workerInfo));
 

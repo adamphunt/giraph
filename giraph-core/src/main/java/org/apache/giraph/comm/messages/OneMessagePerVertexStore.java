@@ -27,6 +27,7 @@ import java.util.concurrent.ConcurrentMap;
 import org.apache.giraph.bsp.CentralizedServiceWorker;
 import org.apache.giraph.combiner.MessageCombiner;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
+import org.apache.giraph.conf.MessageClasses;
 import org.apache.giraph.factories.MessageValueFactory;
 import org.apache.giraph.utils.VertexIdMessageIterator;
 import org.apache.giraph.utils.VertexIdMessages;
@@ -44,7 +45,7 @@ import org.apache.hadoop.io.WritableComparable;
 public class OneMessagePerVertexStore<I extends WritableComparable,
     M extends Writable> extends SimpleMessageStore<I, M, M> {
   /** MessageCombiner for messages */
-  private final MessageCombiner<I, M> messageCombiner;
+  private final MessageCombiner<? super I, M> messageCombiner;
 
   /**
    * @param messageValueFactory Message class held in the store
@@ -55,7 +56,7 @@ public class OneMessagePerVertexStore<I extends WritableComparable,
   public OneMessagePerVertexStore(
       MessageValueFactory<M> messageValueFactory,
       CentralizedServiceWorker<I, ?, ?> service,
-      MessageCombiner<I, M> messageCombiner,
+      MessageCombiner<? super I, M> messageCombiner,
       ImmutableClassesGiraphConfiguration<I, ?, ?> config) {
     super(messageValueFactory, service, config);
     this.messageCombiner =
@@ -70,7 +71,7 @@ public class OneMessagePerVertexStore<I extends WritableComparable,
   @Override
   public void addPartitionMessages(
       int partitionId,
-      VertexIdMessages<I, M> messages) throws IOException {
+      VertexIdMessages<I, M> messages) {
     ConcurrentMap<I, M> partitionMap =
         getOrCreatePartitionMap(partitionId);
     VertexIdMessageIterator<I, M> vertexIdMessageIterator =
@@ -162,9 +163,10 @@ public class OneMessagePerVertexStore<I extends WritableComparable,
 
     @Override
     public MessageStore<I, M> newStore(
-        MessageValueFactory<M> messageValueFactory) {
-      return new OneMessagePerVertexStore<I, M>(messageValueFactory, service,
-          config.<M>createMessageCombiner(), config);
+        MessageClasses<I, M> messageClasses) {
+      return new OneMessagePerVertexStore<I, M>(
+          messageClasses.createMessageValueFactory(config), service,
+          messageClasses.createMessageCombiner(config), config);
     }
 
     @Override
@@ -172,11 +174,6 @@ public class OneMessagePerVertexStore<I extends WritableComparable,
         ImmutableClassesGiraphConfiguration<I, ?, ?> conf) {
       this.service = service;
       this.config = conf;
-    }
-
-    @Override
-    public boolean shouldTraverseMessagesInOrder() {
-      return false;
     }
   }
 }

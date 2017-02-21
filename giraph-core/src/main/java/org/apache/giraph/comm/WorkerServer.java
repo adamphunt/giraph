@@ -18,6 +18,7 @@
 
 package org.apache.giraph.comm;
 
+import org.apache.giraph.comm.flow_control.FlowControl;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableComparable;
 
@@ -43,6 +44,12 @@ public interface WorkerServer<I extends WritableComparable,
   InetSocketAddress getMyAddress();
 
   /**
+   * Get server host name or IP
+   * @return server host name or IP
+   */
+  String getLocalHostOrIp();
+
+  /**
    * Prepare incoming messages for computation, and resolve mutation requests.
    */
   void prepareSuperstep();
@@ -58,4 +65,11 @@ public interface WorkerServer<I extends WritableComparable,
    * Shuts down.
    */
   void close();
+
+  /**
+   * Inform this server about the flow control used in sending requests
+   *
+   * @param flowControl reference to the flow control policy
+   */
+  void setFlowControl(FlowControl flowControl);
 }

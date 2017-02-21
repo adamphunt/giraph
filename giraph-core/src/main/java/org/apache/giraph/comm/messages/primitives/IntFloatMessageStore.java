@@ -33,8 +33,6 @@ import java.util.List;
 import org.apache.giraph.bsp.CentralizedServiceWorker;
 import org.apache.giraph.combiner.MessageCombiner;
 import org.apache.giraph.comm.messages.MessageStore;
-import org.apache.giraph.partition.Partition;
-import org.apache.giraph.partition.PartitionStore;
 import org.apache.giraph.utils.EmptyIterable;
 import org.apache.giraph.utils.VertexIdMessageIterator;
 import org.apache.giraph.utils.VertexIdMessages;
@@ -74,14 +72,10 @@ public class IntFloatMessageStore
 
     map = new Int2ObjectOpenHashMap<Int2FloatOpenHashMap>();
     for (int partitionId : service.getPartitionStore().getPartitionIds()) {
-      PartitionStore<IntWritable, Writable, Writable> partitionStore =
-        service.getPartitionStore();
-      Partition<IntWritable, Writable, Writable> partition =
-        partitionStore.getOrCreatePartition(partitionId);
-      Int2FloatOpenHashMap partitionMap =
-          new Int2FloatOpenHashMap((int) partition.getVertexCount());
+      Int2FloatOpenHashMap partitionMap = new Int2FloatOpenHashMap(
+          (int) service.getPartitionStore()
+              .getPartitionVertexCount(partitionId));
       map.put(partitionId, partitionMap);
-      partitionStore.putPartition(partition);
     }
   }
 
@@ -102,8 +96,7 @@ public class IntFloatMessageStore
 
   @Override
   public void addPartitionMessages(int partitionId,
-      VertexIdMessages<IntWritable, FloatWritable> messages) throws
-      IOException {
+      VertexIdMessages<IntWritable, FloatWritable> messages) {
     IntWritable reusableVertexId = new IntWritable();
     FloatWritable reusableMessage = new FloatWritable();
     FloatWritable reusableCurrentMessage = new FloatWritable();
@@ -134,7 +127,7 @@ public class IntFloatMessageStore
   }
 
   @Override
-  public void clearPartition(int partitionId) throws IOException {
+  public void clearPartition(int partitionId) {
     map.get(partitionId).clear();
   }
 
@@ -144,8 +137,14 @@ public class IntFloatMessageStore
   }
 
   @Override
+  public boolean hasMessagesForPartition(int partitionId) {
+    Int2FloatOpenHashMap partitionMessages = map.get(partitionId);
+    return partitionMessages != null && !partitionMessages.isEmpty();
+  }
+
+  @Override
   public Iterable<FloatWritable> getVertexMessages(
-      IntWritable vertexId) throws IOException {
+      IntWritable vertexId) {
     Int2FloatOpenHashMap partitionMap = getPartitionMap(vertexId);
     if (!partitionMap.containsKey(vertexId.get())) {
       return EmptyIterable.get();
@@ -156,12 +155,12 @@ public class IntFloatMessageStore
   }
 
   @Override
-  public void clearVertexMessages(IntWritable vertexId) throws IOException {
+  public void clearVertexMessages(IntWritable vertexId) {
     getPartitionMap(vertexId).remove(vertexId.get());
   }
 
   @Override
-  public void clearAll() throws IOException {
+  public void clearAll() {
     map.clear();
   }
 

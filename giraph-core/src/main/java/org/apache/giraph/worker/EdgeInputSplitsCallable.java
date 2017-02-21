@@ -26,9 +26,10 @@ import org.apache.giraph.graph.VertexEdgeCount;
 import org.apache.giraph.io.EdgeInputFormat;
 import org.apache.giraph.io.EdgeReader;
 import org.apache.giraph.io.filters.EdgeInputFilter;
+import org.apache.giraph.io.InputType;
+import org.apache.giraph.ooc.OutOfCoreEngine;
 import org.apache.giraph.utils.LoggerUtils;
 import org.apache.giraph.utils.MemoryUtils;
-import org.apache.giraph.zk.ZooKeeperExt;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableComparable;
 import org.apache.hadoop.mapreduce.InputSplit;
@@ -89,17 +90,14 @@ public class EdgeInputSplitsCallable<I extends WritableComparable,
    * @param configuration Configuration
    * @param bspServiceWorker service worker
    * @param splitsHandler Handler for input splits
-   * @param zooKeeperExt Handle to ZooKeeperExt
    */
   public EdgeInputSplitsCallable(
       EdgeInputFormat<I, E> edgeInputFormat,
       Mapper<?, ?, ?, ?>.Context context,
       ImmutableClassesGiraphConfiguration<I, V, E> configuration,
       BspServiceWorker<I, V, E> bspServiceWorker,
-      InputSplitsHandler splitsHandler,
-      ZooKeeperExt zooKeeperExt)  {
-    super(context, configuration, bspServiceWorker, splitsHandler,
-        zooKeeperExt);
+      WorkerInputSplitsHandler splitsHandler)  {
+    super(context, configuration, bspServiceWorker, splitsHandler);
     this.edgeInputFormat = edgeInputFormat;
 
     this.bspServiceWorker = bspServiceWorker;
@@ -124,6 +122,11 @@ public class EdgeInputSplitsCallable<I extends WritableComparable,
   @Override
   public EdgeInputFormat<I, E> getInputFormat() {
     return edgeInputFormat;
+  }
+
+  @Override
+  public InputType getInputType() {
+    return InputType.EDGE;
   }
 
   /**
@@ -152,7 +155,16 @@ public class EdgeInputSplitsCallable<I extends WritableComparable,
     long inputSplitEdgesLoaded = 0;
     long inputSplitEdgesFiltered = 0;
 
+    int count = 0;
+    OutOfCoreEngine oocEngine = bspServiceWorker.getServerData().getOocEngine();
     while (edgeReader.nextEdge()) {
+      // If out-of-core mechanism is used, check whether this thread
+      // can stay active or it should temporarily suspend and stop
+      // processing and generating more data for the moment.
+      if (oocEngine != null &&
+          (++count & OutOfCoreEngine.CHECK_IN_INTERVAL) == 0) {
+        oocEngine.activeThreadCheckIn();
+      }
       I sourceId = edgeReader.getCurrentSourceId();
       Edge<I, E> readerEdge = edgeReader.getCurrentEdge();
       if (sourceId == null) {
@@ -226,6 +238,6 @@ public class EdgeInputSplitsCallable<I extends WritableComparable,
         inputSplitEdgesLoaded % EDGES_UPDATE_PERIOD);
     WorkerProgress.get().incrementEdgeInputSplitsLoaded();
 
-    return new VertexEdgeCount(0, inputSplitEdgesLoaded);
+    return new VertexEdgeCount(0, inputSplitEdgesLoaded, 0);
   }
 }

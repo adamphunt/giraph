@@ -17,13 +17,20 @@
  */
 package org.apache.giraph.types.ops;
 
-import org.apache.giraph.types.ops.collections.BasicArrayList.BasicFloatArrayList;
+import org.apache.giraph.types.ops.collections.array.WFloatArrayList;
 import org.apache.hadoop.io.FloatWritable;
 
+import java.io.DataInput;
+import java.io.IOException;
+
+// AUTO-GENERATED class via class:
+// org.apache.giraph.generate.GeneratePrimitiveClasses
+
 /** TypeOps implementation for working with FloatWritable type */
-public enum FloatTypeOps implements PrimitiveTypeOps<FloatWritable> {
+public enum FloatTypeOps implements
+    PrimitiveTypeOps<FloatWritable>, NumericTypeOps<FloatWritable> {
   /** Singleton instance */
-  INSTANCE();
+  INSTANCE;
 
   @Override
   public Class<FloatWritable> getTypeClass() {
@@ -46,7 +53,57 @@ public enum FloatTypeOps implements PrimitiveTypeOps<FloatWritable> {
   }
 
   @Override
-  public BasicFloatArrayList createArrayList(int capacity) {
-    return new BasicFloatArrayList(capacity);
+  public WFloatArrayList createArrayList() {
+    return new WFloatArrayList();
+  }
+
+  @Override
+  public WFloatArrayList createArrayList(int capacity) {
+    return new WFloatArrayList(capacity);
+  }
+
+  @Override
+  public WFloatArrayList readNewArrayList(DataInput in) throws IOException {
+    return WFloatArrayList.readNew(in);
+  }
+
+  @Override
+  public FloatWritable createZero() {
+    return new FloatWritable(0);
+  }
+
+  @Override
+  public FloatWritable createOne() {
+    return new FloatWritable(1);
+  }
+
+  @Override
+  public FloatWritable createMinNegativeValue() {
+    return new FloatWritable(Float.NEGATIVE_INFINITY);
+  }
+
+  @Override
+  public FloatWritable createMaxPositiveValue() {
+    return new FloatWritable(Float.POSITIVE_INFINITY);
+  }
+
+  @Override
+  public void plusInto(FloatWritable value, FloatWritable increment) {
+    value.set(value.get() + increment.get());
+  }
+
+  @Override
+  public void multiplyInto(FloatWritable value, FloatWritable multiplier) {
+    value.set(value.get() * multiplier.get());
+  }
+
+  @Override
+  public void negate(FloatWritable value) {
+    value.set(-value.get());
+  }
+
+  @Override
+  public int compare(FloatWritable value1, FloatWritable value2) {
+    return Float.compare(value1.get(), value2.get());
   }
 }

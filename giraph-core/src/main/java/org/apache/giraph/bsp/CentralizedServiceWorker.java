@@ -20,16 +20,17 @@ package org.apache.giraph.bsp;
 
 import org.apache.giraph.comm.ServerData;
 import org.apache.giraph.comm.WorkerClient;
+import org.apache.giraph.graph.AddressesAndPartitionsWritable;
 import org.apache.giraph.graph.FinishedSuperstepStats;
 import org.apache.giraph.graph.GlobalStats;
 import org.apache.giraph.graph.GraphTaskManager;
 import org.apache.giraph.graph.VertexEdgeCount;
 import org.apache.giraph.io.superstep_output.SuperstepOutput;
-import org.apache.giraph.master.MasterInfo;
 import org.apache.giraph.metrics.GiraphTimerContext;
 import org.apache.giraph.partition.PartitionOwner;
 import org.apache.giraph.partition.PartitionStats;
 import org.apache.giraph.partition.PartitionStore;
+import org.apache.giraph.worker.WorkerInputSplitsHandler;
 import org.apache.giraph.worker.WorkerAggregatorHandler;
 import org.apache.giraph.worker.WorkerContext;
 import org.apache.giraph.worker.WorkerInfo;
@@ -182,13 +183,6 @@ public interface CentralizedServiceWorker<I extends WritableComparable,
       Collection<? extends PartitionOwner> masterSetPartitionOwners);
 
   /**
-   * Get master info
-   *
-   * @return Master info
-   */
-  MasterInfo getMasterInfo();
-
-  /**
    * Get the GraphTaskManager that this service is using.  Vertices need to know
    * this.
    *
@@ -245,4 +239,19 @@ public interface CentralizedServiceWorker<I extends WritableComparable,
    * previous superstep.
    */
   GlobalStats getGlobalStats();
+
+  /**
+   * Get input splits handler used during input
+   *
+   * @return Input splits handler
+   */
+  WorkerInputSplitsHandler getInputSplitsHandler();
+
+  /**
+   * Received addresses and partitions assignments from master.
+   *
+   * @param addressesAndPartitions Addresses and partitions assignment
+   */
+  void addressesAndPartitionsReceived(
+      AddressesAndPartitionsWritable addressesAndPartitions);
 }

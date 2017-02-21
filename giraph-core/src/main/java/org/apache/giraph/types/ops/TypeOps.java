@@ -23,6 +23,9 @@ package org.apache.giraph.types.ops;
  * but still having efficient code.
  * For example, by reducing object allocation via reuse.
  *
+ * Use enum singleton pattern, having single enum value - INSTANCE.
+ * Serialization code depends on implementations being enums.
+ *
  * @param <T> Type
  */
 public interface TypeOps<T> {
@@ -43,9 +46,9 @@ public interface TypeOps<T> {
    */
   T createCopy(T from);
   /**
-   * Copies value from first argument into the second.
-   * @param to Value of object to be copied
-   * @param from Object into which value should be copied
+   * Copies the value from the second argument into the first.
+   * @param to Object into which the value should be copied
+   * @param from Value of object to be copied
    */
   void set(T to, T from);
 }
