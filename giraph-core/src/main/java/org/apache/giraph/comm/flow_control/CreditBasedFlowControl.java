@@ -42,14 +42,7 @@ import java.util.Comparator;
 import java.util.Deque;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.Callable;
-import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.Semaphore;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static com.google.common.base.Preconditions.checkState;
@@ -275,7 +268,7 @@ public class CreditBasedFlowControl implements FlowControl {
       perWorkerUnsentRequestMap.putIfAbsent(
           destTaskId, new ArrayDeque<WritableRequest>());
       resumeRequestsId.putIfAbsent(
-          destTaskId, Sets.<Long>newConcurrentHashSet());
+          destTaskId, Sets.newSetFromMap(new ConcurrentHashMap<Long, Boolean>()));
       if (temp != null) {
         pair = temp;
       }
