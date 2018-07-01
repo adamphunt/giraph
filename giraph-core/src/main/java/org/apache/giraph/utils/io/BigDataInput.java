@@ -18,9 +18,9 @@
 
 package org.apache.giraph.utils.io;
 
-import org.apache.giraph.utils.ExtendedByteArrayDataInput;
 import org.apache.giraph.utils.ExtendedDataInput;
 import org.apache.giraph.utils.ExtendedDataOutput;
+import org.apache.giraph.utils.UnsafeByteArrayInputStream;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -36,7 +36,7 @@ import java.util.List;
 public class BigDataInput implements ExtendedDataInput {
   /** Empty data input */
   private static final ExtendedDataInput EMPTY_INPUT =
-      new ExtendedByteArrayDataInput(new byte[0]);
+      new UnsafeByteArrayInputStream(new byte[0]);
 
   /** Input which we are currently reading from */
   private ExtendedDataInput currentInput;
@@ -83,14 +83,21 @@ public class BigDataInput implements ExtendedDataInput {
 
   @Override
   public void readFully(byte[] b) throws IOException {
-    checkIfShouldMoveToNextDataInput();
-    currentInput.readFully(b);
+    readFully(b, 0, b.length);
   }
 
   @Override
   public void readFully(byte[] b, int off, int len) throws IOException {
     checkIfShouldMoveToNextDataInput();
-    currentInput.readFully(b, off, len);
+    int available = currentInput.available();
+    if (len <= available) {
+      currentInput.readFully(b, off, len);
+    } else {
+      // When we are trying to read more bytes than there are in single chunk
+      // we need to read part by part
+      currentInput.readFully(b, off, available);
+      readFully(b, off + available, len - available);
+    }
   }
 
   @Override

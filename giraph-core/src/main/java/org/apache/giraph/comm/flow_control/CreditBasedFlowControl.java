@@ -18,9 +18,12 @@
 
 package org.apache.giraph.comm.flow_control;
 
+import static com.google.common.base.Preconditions.checkState;
+import static org.apache.giraph.conf.GiraphConstants.WAITING_REQUEST_MSECS;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
+import org.apache.commons.lang3.tuple.ImmutablePair;
 import org.apache.commons.lang3.tuple.MutablePair;
 import org.apache.commons.lang3.tuple.Pair;
 import org.apache.giraph.comm.netty.NettyClient;
@@ -30,8 +33,6 @@ import org.apache.giraph.comm.requests.WritableRequest;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
 import org.apache.giraph.conf.IntConfOption;
 import org.apache.giraph.utils.AdjustableSemaphore;
-import org.apache.giraph.utils.CallableFactory;
-import org.apache.giraph.utils.LogStacktraceCallable;
 import org.apache.giraph.utils.ThreadUtils;
 import org.apache.log4j.Logger;
 
@@ -42,29 +43,24 @@ import java.util.Comparator;
 import java.util.Deque;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.Callable;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import static com.google.common.base.Preconditions.checkState;
-import static org.apache.giraph.conf.GiraphConstants.WAITING_REQUEST_MSECS;
-
 /**
  * Representation of credit-based flow control policy. With this policy there
  * can be limited number of open requests from any worker x to any other worker
- * y. This number is called 'credit'. Let's denote this number by C{x->y}. This
- * implementation assumes that for a particular worker W, all values of C{x->W}
- * are the same. Let's denote this value by CR_W. CR_W may change due to other
- * reasons (e.g. memory pressure observed in an out-of-core mechanism). However,
- * CR_W is always in range [0, MAX_CR], where MAX_CR is a user-defined constant.
- * Note that MAX_CR should be representable by at most 14 bits.
+ * y. This number is called 'credit'. Let's denote this number by C{x-&gt;y}.
+ * This implementation assumes that for a particular worker W, all values of
+ * C{x-&gt;W} are the same. Let's denote this value by CR_W. CR_W may change
+ * due to other reasons (e.g. memory pressure observed in an out-of-core
+ * mechanism). However, CR_W is always in range [0, MAX_CR], where MAX_CR
+ * is a user-defined constant. Note that MAX_CR should be representable by
+ * at most 14 bits.
  *
  * In this implementation, the value of CR_W is announced to other workers along
  * with the ACK response envelope for all ACK response envelope going out of W.
@@ -175,74 +171,92 @@ public class CreditBasedFlowControl implements FlowControl {
   private final ConcurrentMap<Integer, Set<Long>> resumeRequestsId =
       Maps.newConcurrentMap();
   /**
+   * Queue of the cached requests to be sent out. The queue keeps pairs of
+   * (destination id, request). The thread-safe blocking queue is used here for
+   * the sake of simplicity. The blocking queue should be bounded (with bounds
+   * no more than user-defined max number of unsent/cached requests) to avoid
+   * excessive memory footprint.
+   */
+  private final BlockingQueue<Pair<Integer, WritableRequest>> toBeSent;
+  /**
    * Semaphore to control number of cached unsent requests. Maximum number of
    * permits of this semaphore should be equal to MAX_NUM_OF_UNSENT_REQUESTS.
    */
   private final Semaphore unsentRequestPermit;
   /** Netty client used for sending requests */
   private final NettyClient nettyClient;
-  /**
-   * Result of execution for the thread responsible for sending resume signals
-   */
-  private final Future<Void> resumeThreadResult;
-  /** Whether we are shutting down the execution */
-  private volatile boolean shouldTerminate;
 
   /**
    * Constructor
    * @param conf configuration
    * @param nettyClient netty client
+   * @param exceptionHandler Exception handler
    */
   public CreditBasedFlowControl(ImmutableClassesGiraphConfiguration conf,
-                                NettyClient nettyClient) {
+                                final NettyClient nettyClient,
+                                Thread.UncaughtExceptionHandler
+                                    exceptionHandler) {
     this.nettyClient = nettyClient;
     maxOpenRequestsPerWorker =
         (short) MAX_NUM_OF_OPEN_REQUESTS_PER_WORKER.get(conf);
     checkState(maxOpenRequestsPerWorker < 0x4000 &&
         maxOpenRequestsPerWorker > 0, "NettyClient: max number of open " +
         "requests should be in range (0, " + 0x4FFF + ")");
-    unsentRequestPermit = new Semaphore(MAX_NUM_OF_UNSENT_REQUESTS.get(conf));
+    int maxUnsentRequests = MAX_NUM_OF_UNSENT_REQUESTS.get(conf);
+    unsentRequestPermit = new Semaphore(maxUnsentRequests);
+    this.toBeSent = new ArrayBlockingQueue<Pair<Integer, WritableRequest>>(
+        maxUnsentRequests);
     unsentWaitMsecs = UNSENT_CACHE_WAIT_INTERVAL.get(conf);
     waitingRequestMsecs = WAITING_REQUEST_MSECS.get(conf);
-    shouldTerminate = false;
-    CallableFactory<Void> callableFactory = new CallableFactory<Void>() {
+
+    // Thread to handle/send resume signals when necessary
+    ThreadUtils.startThread(new Runnable() {
       @Override
-      public Callable<Void> newCallable(int callableId) {
-        return new Callable<Void>() {
-          @Override
-          public Void call() throws Exception {
-            while (true) {
-              synchronized (workersToResume) {
-                if (shouldTerminate) {
-                  break;
-                }
-                for (Integer workerId : workersToResume) {
-                  if (maxOpenRequestsPerWorker != 0) {
-                    sendResumeSignal(workerId);
-                  } else {
-                    break;
-                  }
-                }
-                try {
-                  workersToResume.wait();
-                } catch (InterruptedException e) {
-                  throw new IllegalStateException("call: caught exception " +
-                      "while waiting for resume-sender thread to be notified!",
-                      e);
-                }
+      public void run() {
+        while (true) {
+          synchronized (workersToResume) {
+            for (Integer workerId : workersToResume) {
+              if (maxOpenRequestsPerWorker != 0) {
+                sendResumeSignal(workerId);
+              } else {
+                break;
               }
             }
-            return null;
+            try {
+              workersToResume.wait();
+            } catch (InterruptedException e) {
+              throw new IllegalStateException("run: caught exception " +
+                  "while waiting for resume-sender thread to be notified!",
+                  e);
+            }
           }
-        };
+        }
       }
-    };
+    }, "resume-sender", exceptionHandler);
 
-    ExecutorService executor = Executors.newSingleThreadExecutor(
-        ThreadUtils.createThreadFactory("resume-sender"));
-    resumeThreadResult = executor.submit(new LogStacktraceCallable<>(
-        callableFactory.newCallable(0)));
-    executor.shutdown();
+    // Thread to handle/send cached requests
+    ThreadUtils.startThread(new Runnable() {
+      @Override
+      public void run() {
+        while (true) {
+          Pair<Integer, WritableRequest> pair = null;
+          try {
+            pair = toBeSent.take();
+          } catch (InterruptedException e) {
+            throw new IllegalStateException("run: failed while waiting to " +
+                "take an element from the request queue!", e);
+          }
+          int taskId = pair.getLeft();
+          WritableRequest request = pair.getRight();
+          nettyClient.doSend(taskId, request);
+          if (aggregateUnsentRequests.decrementAndGet() == 0) {
+            synchronized (aggregateUnsentRequests) {
+              aggregateUnsentRequests.notifyAll();
+            }
+          }
+        }
+      }
+    }, "cached-req-sender", exceptionHandler);
   }
 
   /**
@@ -251,6 +265,11 @@ public class CreditBasedFlowControl implements FlowControl {
    * @param workerId id of the worker to send the resume signal to
    */
   private void sendResumeSignal(int workerId) {
+    if (maxOpenRequestsPerWorker == 0) {
+      LOG.warn("sendResumeSignal: method called while the max open requests " +
+          "for worker " + workerId + " is still 0");
+      return;
+    }
     WritableRequest request = new SendResumeRequest(maxOpenRequestsPerWorker);
     Long resumeId = nettyClient.doSend(workerId, request);
     checkState(resumeId != null);
@@ -407,20 +426,6 @@ public class CreditBasedFlowControl implements FlowControl {
   }
 
   @Override
-  public void shutdown() {
-    synchronized (workersToResume) {
-      shouldTerminate = true;
-      workersToResume.notifyAll();
-    }
-    try {
-      resumeThreadResult.get();
-    } catch (InterruptedException | ExecutionException e) {
-      throw new IllegalStateException("shutdown: caught exception while" +
-          "getting result of resume-sender thread");
-    }
-  }
-
-  @Override
   public void logInfo() {
     if (LOG.isInfoEnabled()) {
       // Count how many unsent requests each task has
@@ -544,13 +549,14 @@ public class CreditBasedFlowControl implements FlowControl {
       }
       unsentRequestPermit.release();
       // At this point, we have a request, and we reserved a credit for the
-      // sender client. So, we send the request to the client and update
-      // the state.
-      nettyClient.doSend(taskId, request);
-      if (aggregateUnsentRequests.decrementAndGet() == 0) {
-        synchronized (aggregateUnsentRequests) {
-          aggregateUnsentRequests.notifyAll();
-        }
+      // sender client. So, we put the request in a queue to be sent to the
+      // client.
+      try {
+        toBeSent.put(
+            new ImmutablePair<Integer, WritableRequest>(taskId, request));
+      } catch (InterruptedException e) {
+        throw new IllegalStateException("trySendCachedRequests: failed while" +
+            "waiting to put element in send queue!", e);
       }
     }
   }

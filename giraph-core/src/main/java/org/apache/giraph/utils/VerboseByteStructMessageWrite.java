@@ -18,11 +18,11 @@
 
 package org.apache.giraph.utils;
 
-import org.apache.hadoop.io.Writable;
-import org.apache.hadoop.io.WritableComparable;
-
 import java.io.DataOutput;
 import java.io.IOException;
+
+import org.apache.hadoop.io.Writable;
+import org.apache.hadoop.io.WritableComparable;
 
 /** Verbose Error mesage for ByteArray based messages */
 public class VerboseByteStructMessageWrite {
@@ -43,13 +43,37 @@ public class VerboseByteStructMessageWrite {
    * @throws IOException
    * @throws RuntimeException
    */
-  public static <I extends WritableComparable, M extends Writable> void
-  verboseWriteCurrentMessage(VertexIdMessageIterator<I, M> iterator,
-    DataOutput out) throws IOException {
+  public static <I extends WritableComparable, M extends Writable>
+  void verboseWriteCurrentMessage(
+    VertexIdMessageIterator<I, M> iterator,
+    DataOutput out
+  ) throws IOException {
+    verboseWriteCurrentMessage(
+      iterator.getCurrentVertexId(), iterator.getCurrentMessage(), out);
+  }
+
+  /**
+   * verboseWriteCurrentMessage
+   * de-serialize, then write messages
+   *
+   * @param vertexId vertexId
+   * @param message message
+   * @param out DataOutput
+   * @param <I> vertexId
+   * @param <M> message
+   * @throws IOException
+   * @throws RuntimeException
+   */
+  public static <I extends WritableComparable, M extends Writable>
+  void verboseWriteCurrentMessage(
+    I vertexId,
+    M message,
+    DataOutput out
+  ) throws IOException {
     try {
-      iterator.getCurrentMessage().write(out);
+      message.write(out);
     } catch (NegativeArraySizeException e) {
-      handleNegativeArraySize(iterator.getCurrentVertexId());
+      handleNegativeArraySize(vertexId);
     }
   }
 
@@ -59,14 +83,14 @@ public class VerboseByteStructMessageWrite {
    * @param vertexId vertexId
    * @param <I> vertexId type
    */
-  public static <I extends WritableComparable> void handleNegativeArraySize(
-      I vertexId) {
-    throw new RuntimeException("The numbers of bytes sent to vertex " +
-        vertexId + " exceeded the max capacity of " +
-        "its ExtendedDataOutput. Please consider setting " +
-        "giraph.useBigDataIOForMessages=true. If there are super-vertices" +
-        " in the graph which receive a lot of messages (total serialized " +
-        "size of messages goes beyond the maximum size of a byte array), " +
-        "setting this option to true will remove that limit");
+  public static <I extends WritableComparable>
+  void handleNegativeArraySize(I vertexId) {
+    throw new RuntimeException("The number of bytes sent to vertex " +
+      vertexId + " exceeded the max capacity of its buffer. Please consider" +
+      " setting giraph.useBigDataIOForMessages to true. You can do" +
+      " this by adding the following option to your command line:" +
+      " -Dgiraph.useBigDataIOForMessages=true." +
+      " If there are super-vertices in the graph that receive many messages," +
+      " setting this option will remove that limit");
   }
 }

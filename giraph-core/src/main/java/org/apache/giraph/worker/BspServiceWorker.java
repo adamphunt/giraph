@@ -183,7 +183,7 @@ public class BspServiceWorker<I extends WritableComparable,
   private GiraphTimer waitRequestsTimer;
 
   /** InputSplit handlers used in INPUT_SUPERSTEP */
-  private WorkerInputSplitsHandler inputSplitsHandler;
+  private final WorkerInputSplitsHandler inputSplitsHandler;
 
   /** Memory observer */
   private final MemoryObserver memoryObserver;
@@ -216,7 +216,7 @@ public class BspServiceWorker<I extends WritableComparable,
         graphTaskManager.createUncaughtExceptionHandler());
     workerInfo.setInetSocketAddress(workerServer.getMyAddress(),
         workerServer.getLocalHostOrIp());
-    workerInfo.setTaskId(getTaskPartition());
+    workerInfo.setTaskId(getTaskId());
     workerClient = new NettyWorkerClient<I, V, E>(context, conf, this,
         graphTaskManager.createUncaughtExceptionHandler());
     workerServer.setFlowControl(workerClient.getFlowControl());
@@ -241,9 +241,9 @@ public class BspServiceWorker<I extends WritableComparable,
     if (conf.isReactiveJmapHistogramDumpEnabled()) {
       conf.addWorkerObserverClass(ReactiveJMapHistoDumper.class);
     }
-    observers = conf.createWorkerObservers();
+    observers = conf.createWorkerObservers(context);
 
-    WorkerProgress.get().setTaskId(getTaskPartition());
+    WorkerProgress.get().setTaskId(getTaskId());
     workerProgressWriter = conf.trackJobProgressOnClient() ?
         new WorkerProgressWriter(graphTaskManager.getJobProgressTracker()) :
         null;
@@ -448,7 +448,9 @@ public class BspServiceWorker<I extends WritableComparable,
       if (inputSplitsDoneStat != null) {
         break;
       }
-      getInputSplitsAllDoneEvent().waitForever();
+      getInputSplitsAllDoneEvent().waitForTimeoutOrFail(
+          GiraphConstants.WAIT_FOR_OTHER_WORKERS_TIMEOUT_MSEC.get(
+              getConfiguration()));
       getInputSplitsAllDoneEvent().reset();
     }
   }
@@ -606,7 +608,9 @@ else[HADOOP_NON_SECURE]*/
               partitionStore.getPartitionVertexCount(partitionId),
               0,
               partitionStore.getPartitionEdgeCount(partitionId),
-              0, 0);
+              0,
+              0,
+              workerInfo.getHostnameId());
       partitionStatsList.add(partitionStats);
     }
     workerGraphPartitioner.finalizePartitionStats(
@@ -647,7 +651,9 @@ else[HADOOP_NON_SECURE]*/
           "from previous failure): " + myHealthPath +
           ".  Waiting for change in attempts " +
           "to re-join the application");
-      getApplicationAttemptChangedEvent().waitForever();
+      getApplicationAttemptChangedEvent().waitForTimeoutOrFail(
+          GiraphConstants.WAIT_ZOOKEEPER_TIMEOUT_MSEC.get(
+              getConfiguration()));
       if (LOG.isInfoEnabled()) {
         LOG.info("registerHealth: Got application " +
             "attempt changed event, killing self");
@@ -714,6 +720,7 @@ else[HADOOP_NON_SECURE]*/
     workerInfoList.clear();
     workerInfoList = addressesAndPartitions.getWorkerInfos();
     masterInfo = addressesAndPartitions.getMasterInfo();
+    workerServer.resetBytesReceivedPerSuperstep();
 
     if (LOG.isInfoEnabled()) {
       LOG.info("startSuperstep: " + masterInfo);
@@ -867,7 +874,9 @@ else[HADOOP_NON_SECURE]*/
   private void waitForOtherWorkers(String superstepFinishedNode) {
     try {
       while (getZkExt().exists(superstepFinishedNode, true) == null) {
-        getSuperstepFinishedEvent().waitForever();
+        getSuperstepFinishedEvent().waitForTimeoutOrFail(
+            GiraphConstants.WAIT_FOR_OTHER_WORKERS_TIMEOUT_MSEC.get(
+                getConfiguration()));
         getSuperstepFinishedEvent().reset();
       }
     } catch (KeeperException e) {
@@ -914,7 +923,7 @@ else[HADOOP_NON_SECURE]*/
 
     String finishedWorkerPath =
         getWorkerFinishedPath(getApplicationAttempt(), getSuperstep()) +
-        "/" + getHostnamePartitionId();
+        "/" + workerInfo.getHostnameId();
     try {
       getZkExt().createExt(finishedWorkerPath,
           workerFinishedInfoObj.toString().getBytes(Charset.defaultCharset()),
@@ -1195,7 +1204,7 @@ else[HADOOP_NON_SECURE]*/
     // for workers and masters, the master will clean up the ZooKeeper
     // znodes associated with this job.
     String workerCleanedUpPath = cleanedUpPath  + "/" +
-        getTaskPartition() + WORKER_SUFFIX;
+        getTaskId() + WORKER_SUFFIX;
     try {
       String finalFinishedPath =
           getZkExt().createExt(workerCleanedUpPath,
@@ -1296,7 +1305,7 @@ else[HADOOP_NON_SECURE]*/
     // Notify master that checkpoint is stored
     String workerWroteCheckpoint =
         getWorkerWroteCheckpointPath(getApplicationAttempt(),
-            getSuperstep()) + "/" + getHostnamePartitionId();
+            getSuperstep()) + "/" + workerInfo.getHostnameId();
     try {
       getZkExt().createExt(workerWroteCheckpoint,
           new byte[0],
@@ -1682,7 +1691,9 @@ else[HADOOP_NON_SECURE]*/
           LOG.info("exchangeVertexPartitions: Waiting for workers " +
               workerIdSet);
         }
-        getPartitionExchangeChildrenChangedEvent().waitForever();
+        getPartitionExchangeChildrenChangedEvent().waitForTimeoutOrFail(
+            GiraphConstants.WAIT_FOR_OTHER_WORKERS_TIMEOUT_MSEC.get(
+                getConfiguration()));
         getPartitionExchangeChildrenChangedEvent().reset();
       }
     } catch (KeeperException | InterruptedException e) {
@@ -1781,6 +1792,31 @@ else[HADOOP_NON_SECURE]*/
   @Override
   public boolean hasPartition(Integer partitionId) {
     return getPartitionStore().hasPartition(partitionId);
+  }
+
+  @Override
+  public Iterable<Integer> getPartitionIds() {
+    return getPartitionStore().getPartitionIds();
+  }
+
+  @Override
+  public long getPartitionVertexCount(Integer partitionId) {
+    return getPartitionStore().getPartitionVertexCount(partitionId);
+  }
+
+  @Override
+  public void startIteration() {
+    getPartitionStore().startIteration();
+  }
+
+  @Override
+  public Partition getNextPartition() {
+    return getPartitionStore().getNextPartition();
+  }
+
+  @Override
+  public void putPartition(Partition partition) {
+    getPartitionStore().putPartition(partition);
   }
 
   @Override

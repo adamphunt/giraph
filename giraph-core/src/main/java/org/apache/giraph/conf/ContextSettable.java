@@ -16,25 +16,19 @@
  * limitations under the License.
  */
 
-package org.apache.giraph.writable.kryo.serializers;
+package org.apache.giraph.conf;
 
-
-import com.esotericsoftware.kryo.Kryo;
-import com.esotericsoftware.kryo.io.Input;
-import com.esotericsoftware.kryo.serializers.MapSerializer;
-import com.google.common.collect.ImmutableMap;
-
-import java.util.HashMap;
-import java.util.Map;
+import org.apache.hadoop.mapreduce.Mapper;
 
 /**
- * Serializer for {@link ImmutableMap}
+ * Worker/Master/Mapper observer can implement this to get context set, to allow
+ * them to access job counters
  */
-public class ImmutableMapSerializer extends MapSerializer {
-  @Override
-  public Map read(Kryo kryo, Input input, Class<Map> type) {
-    Map map = super.read(kryo, input,
-        (Class<Map>) ((Object) HashMap.class));
-    return ImmutableMap.copyOf(map);
-  }
+public interface ContextSettable {
+  /**
+   * Set context
+   *
+   * @param context Mapper context
+   */
+  void setContext(Mapper<?, ?, ?, ?>.Context context);
 }

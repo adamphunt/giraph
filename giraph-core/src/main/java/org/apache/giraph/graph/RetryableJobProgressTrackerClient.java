@@ -21,6 +21,7 @@ package org.apache.giraph.graph;
 import org.apache.giraph.conf.GiraphConfiguration;
 import org.apache.giraph.job.ClientThriftServer;
 import org.apache.giraph.job.JobProgressTracker;
+import org.apache.giraph.master.MasterProgress;
 import org.apache.giraph.worker.WorkerProgress;
 import org.apache.log4j.Logger;
 
@@ -123,11 +124,12 @@ public class RetryableJobProgressTrackerClient
   }
 
   @Override
-  public synchronized void logError(final String logLine) {
+  public synchronized void logError(final String logLine,
+                                    final byte [] exByteArray) {
     executeWithRetry(new Runnable() {
       @Override
       public void run() {
-        jobProgressTracker.logError(logLine);
+        jobProgressTracker.logError(logLine, exByteArray);
       }
     });
   }
@@ -148,6 +150,16 @@ public class RetryableJobProgressTrackerClient
       @Override
       public void run() {
         jobProgressTracker.updateProgress(workerProgress);
+      }
+    });
+  }
+
+  @Override
+  public void updateMasterProgress(final MasterProgress masterProgress) {
+    executeWithRetry(new Runnable() {
+      @Override
+      public void run() {
+        jobProgressTracker.updateMasterProgress(masterProgress);
       }
     });
   }

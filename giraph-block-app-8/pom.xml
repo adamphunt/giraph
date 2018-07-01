@@ -24,7 +24,7 @@ under the License.
   <parent>
     <groupId>org.apache.giraph</groupId>
     <artifactId>giraph-parent</artifactId>
-    <version>1.2.0</version>
+    <version>1.2.0-mapr</version>
   </parent>
   <artifactId>giraph-block-app-8</artifactId>
   <packaging>jar</packaging>
@@ -118,6 +118,14 @@ under the License.
     <dependency>
       <groupId>log4j</groupId>
       <artifactId>log4j</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.commons</groupId>
+      <artifactId>commons-lang3</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>net.openhft</groupId>
+      <artifactId>compiler</artifactId>
     </dependency>
 
     <!-- runtime dependency -->

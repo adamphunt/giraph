@@ -20,6 +20,8 @@ package org.apache.giraph.job;
 
 import com.google.common.collect.Iterables;
 import org.apache.giraph.conf.FloatConfOption;
+import org.apache.giraph.conf.GiraphConstants;
+import org.apache.giraph.master.MasterProgress;
 import org.apache.giraph.worker.WorkerProgress;
 import org.apache.giraph.worker.WorkerProgressStats;
 import org.apache.hadoop.conf.Configuration;
@@ -43,12 +45,13 @@ public class CombinedWorkerProgress extends WorkerProgressStats {
       new FloatConfOption("giraph.normalFreeMemoryFraction", 0.1f,
           "If free memory fraction on some worker goes below this value, " +
               "warning will be printed");
-
   /**
    * If free memory fraction on some worker goes below this value,
    * warning will be printed
    */
   private double normalFreeMemoryFraction;
+  /** Total number of supersteps */
+  private final int superstepCount;
   /**
    * How many workers have reported that they are in highest reported
    * superstep
@@ -71,16 +74,21 @@ public class CombinedWorkerProgress extends WorkerProgressStats {
   private int minGraphPercentageInMemory = 100;
   /** Id of the worker with min percentage of graph in memory */
   private int workerWithMinGraphPercentageInMemory = -1;
+  /** Master progress */
+  private MasterProgress masterProgress;
 
   /**
    * Constructor
    *
    * @param workerProgresses Worker progresses to combine
+   * @param masterProgress Master progress
    * @param conf Configuration
    */
   public CombinedWorkerProgress(Iterable<WorkerProgress> workerProgresses,
-      Configuration conf) {
+      MasterProgress masterProgress, Configuration conf) {
+    this.masterProgress = masterProgress;
     normalFreeMemoryFraction = NORMAL_FREE_MEMORY_FRACTION.get(conf);
+    superstepCount = GiraphConstants.SUPERSTEP_COUNT.get(conf);
     for (WorkerProgress workerProgress : workerProgresses) {
       if (workerProgress.getCurrentSuperstep() > currentSuperstep) {
         verticesToCompute = 0;
@@ -135,6 +143,38 @@ public class CombinedWorkerProgress extends WorkerProgressStats {
   }
 
   /**
+   * Get Current superstep
+   * @return Current superstep
+   */
+  public long getCurrentSuperstep() {
+    return currentSuperstep;
+  }
+
+  /**
+   * Get workers in superstep
+   * @return Workers in superstep.
+   */
+  public long getWorkersInSuperstep() {
+    return workersInSuperstep;
+  }
+
+  /**
+   * Get vertices computed
+   * @return Vertices computed
+   */
+  public long getVerticesComputed() {
+    return verticesComputed;
+  }
+
+  /**
+   * Get vertices to compute
+   * @return Vertices to compute
+   */
+  public long getVerticesToCompute() {
+    return verticesToCompute;
+  }
+
+  /**
    * Is the application done
    *
    * @param expectedWorkersDone Number of workers which should be done in
@@ -145,20 +185,42 @@ public class CombinedWorkerProgress extends WorkerProgressStats {
     return workersDone == expectedWorkersDone;
   }
 
-  @Override
-  public String toString() {
+  /**
+   * Get string describing total job progress
+   *
+   * @return String describing total job progress
+   */
+  protected String getProgressString() {
     StringBuilder sb = new StringBuilder();
-    sb.append("Data from ").append(workersInSuperstep).append(" workers - ");
     if (isInputSuperstep()) {
       sb.append("Loading data: ");
-      sb.append(verticesLoaded).append(" vertices loaded, ");
-      sb.append(vertexInputSplitsLoaded).append(
-          " vertex input splits loaded; ");
-      sb.append(edgesLoaded).append(" edges loaded, ");
-      sb.append(edgeInputSplitsLoaded).append(" edge input splits loaded");
+      if (!masterProgress.vertexInputSplitsSet() ||
+          masterProgress.getVertexInputSplitCount() > 0) {
+        sb.append(verticesLoaded).append(" vertices loaded, ");
+        sb.append(vertexInputSplitsLoaded).append(
+            " vertex input splits loaded");
+        if (masterProgress.getVertexInputSplitCount() > 0) {
+          sb.append(" (out of ").append(
+              masterProgress.getVertexInputSplitCount()).append(")");
+        }
+        sb.append("; ");
+      }
+      if (!masterProgress.edgeInputSplitsSet() ||
+          masterProgress.getEdgeInputSplitsCount() > 0) {
+        sb.append(edgesLoaded).append(" edges loaded, ");
+        sb.append(edgeInputSplitsLoaded).append(" edge input splits loaded");
+        if (masterProgress.getEdgeInputSplitsCount() > 0) {
+          sb.append(" (out of ").append(
+              masterProgress.getEdgeInputSplitsCount()).append(")");
+        }
+      }
     } else if (isComputeSuperstep()) {
-      sb.append("Compute superstep ").append(currentSuperstep).append(": ");
-      sb.append(verticesComputed).append(" out of ").append(
+      sb.append("Compute superstep ").append(currentSuperstep);
+      if (superstepCount > 0) {
+        // Supersteps are 0..superstepCount-1 so subtract 1 here
+        sb.append(" (out of ").append(superstepCount - 1).append(")");
+      }
+      sb.append(": ").append(verticesComputed).append(" out of ").append(
           verticesToCompute).append(" vertices computed; ");
       sb.append(partitionsComputed).append(" out of ").append(
           partitionsToCompute).append(" partitions computed");
@@ -169,6 +231,14 @@ public class CombinedWorkerProgress extends WorkerProgressStats {
       sb.append(partitionsStored).append(" out of ").append(
           partitionsToStore).append(" partitions stored");
     }
+    return sb.toString();
+  }
+
+  @Override
+  public String toString() {
+    StringBuilder sb = new StringBuilder();
+    sb.append("Data from ").append(workersInSuperstep).append(" workers - ");
+    sb.append(getProgressString());
     sb.append("; min free memory on worker ").append(
         workerWithMinFreeMemory).append(" - ").append(
         DECIMAL_FORMAT.format(minFreeMemoryMB)).append("MB, average ").append(
@@ -183,5 +253,20 @@ public class CombinedWorkerProgress extends WorkerProgressStats {
           .append(workerWithMinGraphPercentageInMemory);
     }
     return sb.toString();
+  }
+
+  /**
+   * Check if this instance made progress from another instance
+   *
+   * @param lastProgress Instance to compare with
+   * @return True iff progress was made
+   */
+  public boolean madeProgressFrom(CombinedWorkerProgress lastProgress) {
+    // If progress strings are different there was progress made
+    if (!getProgressString().equals(lastProgress.getProgressString())) {
+      return true;
+    }
+    // If more workers were done there was progress made
+    return workersDone != lastProgress.workersDone;
   }
 }

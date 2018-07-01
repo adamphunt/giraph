@@ -18,6 +18,7 @@
 
 package org.apache.giraph.graph;
 
+import org.apache.giraph.master.MasterProgress;
 import org.apache.giraph.worker.WorkerProgress;
 
 /**
@@ -38,7 +39,7 @@ public class JobProgressTrackerClientNoOp implements JobProgressTrackerClient {
   }
 
   @Override
-  public void logError(String logLine) {
+  public void logError(String logLine, byte [] exByteArray) {
   }
 
   @Override
@@ -47,5 +48,9 @@ public class JobProgressTrackerClientNoOp implements JobProgressTrackerClient {
 
   @Override
   public void updateProgress(WorkerProgress workerProgress) {
+  }
+
+  @Override
+  public void updateMasterProgress(MasterProgress masterProgress) {
   }
 }

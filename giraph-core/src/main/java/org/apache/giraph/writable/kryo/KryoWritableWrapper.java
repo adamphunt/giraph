@@ -71,12 +71,12 @@ public class KryoWritableWrapper<T> implements Writable {
 
   @Override
   public void readFields(DataInput in) throws java.io.IOException {
-    object = HadoopKryo.readClassAndObject(in);
+    object = HadoopKryo.readClassAndObj(in);
   }
 
   @Override
   public void write(DataOutput out) throws IOException {
-    HadoopKryo.writeClassAndObject(out, object);
+    HadoopKryo.writeClassAndObj(out, object);
   }
 
   /**
@@ -119,5 +119,30 @@ public class KryoWritableWrapper<T> implements Writable {
    */
   public static <T> T wrapAndCopy(T object) {
     return WritableUtils.createCopy(new KryoWritableWrapper<>(object)).get();
+  }
+
+  /**
+   * Converting the object to byte array.
+   * @param object Object
+   * @param <T> Type
+   * @return byte array
+   */
+  public static <T> byte [] convertToByteArray(T object) {
+    KryoWritableWrapper<T> wrapper =
+            new KryoWritableWrapper<>(object);
+    return WritableUtils.toByteArray(wrapper);
+  }
+
+  /**
+   * Converting from byte array
+   * @param arr byte array
+   * @param <T> type
+   * @return original object
+   */
+  public static <T> T convertFromByteArray(byte [] arr) {
+    KryoWritableWrapper<T> wrapper =
+            new KryoWritableWrapper<>();
+    WritableUtils.fromByteArray(arr, wrapper);
+    return wrapper.get();
   }
 }

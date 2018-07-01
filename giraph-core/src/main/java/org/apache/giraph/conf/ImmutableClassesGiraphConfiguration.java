@@ -36,6 +36,7 @@ import org.apache.giraph.edge.ReusableEdge;
 import org.apache.giraph.factories.ComputationFactory;
 import org.apache.giraph.factories.EdgeValueFactory;
 import org.apache.giraph.factories.MessageValueFactory;
+import org.apache.giraph.factories.OutEdgesFactory;
 import org.apache.giraph.factories.ValueFactories;
 import org.apache.giraph.factories.VertexIdFactory;
 import org.apache.giraph.factories.VertexValueFactory;
@@ -75,6 +76,7 @@ import org.apache.giraph.utils.ExtendedByteArrayDataInput;
 import org.apache.giraph.utils.ExtendedByteArrayDataOutput;
 import org.apache.giraph.utils.ExtendedDataInput;
 import org.apache.giraph.utils.ExtendedDataOutput;
+import org.apache.giraph.utils.GcObserver;
 import org.apache.giraph.utils.ReflectionUtils;
 import org.apache.giraph.utils.UnsafeByteArrayInputStream;
 import org.apache.giraph.utils.UnsafeByteArrayOutputStream;
@@ -112,6 +114,10 @@ public class ImmutableClassesGiraphConfiguration<I extends WritableComparable,
   private Class<? extends Writable> mappingTargetClass = null;
   /** Value (IVEMM) Factories */
   private final ValueFactories<I, V, E> valueFactories;
+  /** Factory to create {@link OutEdges} for computation */
+  private final OutEdgesFactory<I, E> outEdgesFactory;
+  /** Factory to create {@link OutEdges} for input */
+  private final OutEdgesFactory<I, E> inputOutEdgesFactory;
   /** Language values (IVEMM) are implemented in */
   private final PerGraphTypeEnum<Language> valueLanguages;
   /** Whether values (IVEMM) need Jython wrappers */
@@ -130,6 +136,8 @@ public class ImmutableClassesGiraphConfiguration<I extends WritableComparable,
   private final boolean useBigDataIOForMessages;
   /** Is the graph static (meaning there is no mutation)? */
   private final boolean isStaticGraph;
+  /** Whether or not to use message size encoding */
+  private final boolean useMessageSizeEncoding;
 
   /**
    * Constructor.  Takes the configuration and then gets the classes out of
@@ -148,6 +156,9 @@ public class ImmutableClassesGiraphConfiguration<I extends WritableComparable,
         GiraphConstants.GRAPH_TYPES_NEEDS_WRAPPERS, conf);
     isStaticGraph = GiraphConstants.STATIC_GRAPH.get(this);
     valueFactories = new ValueFactories<I, V, E>(this);
+    outEdgesFactory = VERTEX_EDGES_FACTORY_CLASS.newInstance(this);
+    inputOutEdgesFactory = INPUT_VERTEX_EDGES_FACTORY_CLASS.newInstance(this);
+    useMessageSizeEncoding = USE_MESSAGE_SIZE_ENCODING.get(conf);
   }
 
   /**
@@ -734,13 +745,15 @@ public class ImmutableClassesGiraphConfiguration<I extends WritableComparable,
   /**
    * Create array of MasterObservers.
    *
+   * @param context Mapper context
    * @return Instantiated array of MasterObservers.
    */
-  public MasterObserver[] createMasterObservers() {
+  public MasterObserver[] createMasterObservers(
+      Mapper<?, ?, ?, ?>.Context context) {
     Class<? extends MasterObserver>[] klasses = getMasterObserverClasses();
     MasterObserver[] objects = new MasterObserver[klasses.length];
     for (int i = 0; i < klasses.length; ++i) {
-      objects[i] = ReflectionUtils.newInstance(klasses[i], this);
+      objects[i] = ReflectionUtils.newInstance(klasses[i], this, context);
     }
     return objects;
   }
@@ -748,13 +761,15 @@ public class ImmutableClassesGiraphConfiguration<I extends WritableComparable,
   /**
    * Create array of WorkerObservers.
    *
+   * @param context Mapper context
    * @return Instantiated array of WorkerObservers.
    */
-  public WorkerObserver[] createWorkerObservers() {
+  public WorkerObserver[] createWorkerObservers(
+      Mapper<?, ?, ?, ?>.Context context) {
     Class<? extends WorkerObserver>[] klasses = getWorkerObserverClasses();
     WorkerObserver[] objects = new WorkerObserver[klasses.length];
     for (int i = 0; i < klasses.length; ++i) {
-      objects[i] = ReflectionUtils.newInstance(klasses[i], this);
+      objects[i] = ReflectionUtils.newInstance(klasses[i], this, context);
     }
     return objects;
   }
@@ -762,13 +777,31 @@ public class ImmutableClassesGiraphConfiguration<I extends WritableComparable,
   /**
    * Create array of MapperObservers.
    *
+   * @param context Mapper context
    * @return Instantiated array of MapperObservers.
    */
-  public MapperObserver[] createMapperObservers() {
+  public MapperObserver[] createMapperObservers(
+      Mapper<?, ?, ?, ?>.Context context) {
     Class<? extends MapperObserver>[] klasses = getMapperObserverClasses();
     MapperObserver[] objects = new MapperObserver[klasses.length];
     for (int i = 0; i < klasses.length; ++i) {
-      objects[i] = ReflectionUtils.newInstance(klasses[i], this);
+      objects[i] = ReflectionUtils.newInstance(klasses[i], this, context);
+    }
+    return objects;
+  }
+
+  /**
+   * Create array of GcObservers.
+   *
+   * @param context Mapper context
+   * @return Instantiated array of GcObservers.
+   */
+  public GcObserver[] createGcObservers(
+      Mapper<?, ?, ?, ?>.Context context) {
+    Class<? extends GcObserver>[] klasses = getGcObserverClasses();
+    GcObserver[] objects = new GcObserver[klasses.length];
+    for (int i = 0; i < klasses.length; ++i) {
+      objects[i] = ReflectionUtils.newInstance(klasses[i], this, context);
     }
     return objects;
   }
@@ -1077,7 +1110,7 @@ public class ImmutableClassesGiraphConfiguration<I extends WritableComparable,
    * @return Instantiated user OutEdges
    */
   public OutEdges<I, E> createOutEdges() {
-    return ReflectionUtils.newInstance(getOutEdgesClass(), this);
+    return outEdgesFactory.newInstance();
   }
 
   /**
@@ -1126,7 +1159,7 @@ public class ImmutableClassesGiraphConfiguration<I extends WritableComparable,
    * @return Instantiated user input OutEdges
    */
   public OutEdges<I, E> createInputOutEdges() {
-    return ReflectionUtils.newInstance(getInputOutEdgesClass(), this);
+    return inputOutEdgesFactory.newInstance();
   }
 
   /**
@@ -1283,7 +1316,7 @@ public class ImmutableClassesGiraphConfiguration<I extends WritableComparable,
   }
 
   /**
-   * Has the user enabled compression in netty client & server
+   * Has the user enabled compression in netty client &amp; server
    *
    * @return true if ok to do compression of netty requests
    */
@@ -1344,5 +1377,15 @@ public class ImmutableClassesGiraphConfiguration<I extends WritableComparable,
    */
   public String getJobId() {
     return get("mapred.job.id", "UnknownJob");
+  }
+
+  /**
+   * Use message size encoding?  This feature may help with complex message
+   * objects.
+   *
+   * @return Whether to use message size encoding
+   */
+  public boolean useMessageSizeEncoding() {
+    return useMessageSizeEncoding;
   }
 }

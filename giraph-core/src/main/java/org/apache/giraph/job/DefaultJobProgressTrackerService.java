@@ -20,6 +20,9 @@ package org.apache.giraph.job;
 
 import org.apache.giraph.conf.GiraphConfiguration;
 import org.apache.giraph.conf.GiraphConstants;
+import org.apache.giraph.conf.IntConfOption;
+import org.apache.giraph.master.MasterProgress;
+import org.apache.giraph.utils.ThreadUtils;
 import org.apache.giraph.worker.WorkerProgress;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.log4j.Logger;
@@ -27,12 +30,19 @@ import org.apache.log4j.Logger;
 import java.io.IOException;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Default implementation of JobProgressTrackerService
  */
 public class DefaultJobProgressTrackerService
     implements JobProgressTrackerService {
+  /** Max time job is allowed to not make progress before getting killed */
+  public static final IntConfOption MAX_ALLOWED_TIME_WITHOUT_PROGRESS_MS =
+      new IntConfOption(
+          "giraph.maxAllowedTimeWithoutProgressMs",
+          3 * 60 * 60 * 1000, // Allow 3h
+          "Max time job is allowed to not make progress before getting killed");
   /** Class logger */
   private static final Logger LOG =
       Logger.getLogger(JobProgressTrackerService.class);
@@ -54,6 +64,9 @@ public class DefaultJobProgressTrackerService
   /** Map of worker progresses */
   private final Map<Integer, WorkerProgress> workerProgresses =
       new ConcurrentHashMap<>();
+  /** Master progress */
+  private final AtomicReference<MasterProgress> masterProgress =
+      new AtomicReference<>(new MasterProgress());
   /** Job */
   private Job job;
 
@@ -72,15 +85,20 @@ public class DefaultJobProgressTrackerService
    * Start the thread which writes progress periodically
    */
   private void startWriterThread() {
-    writerThread = new Thread(new Runnable() {
+    writerThread = ThreadUtils.startThread(new Runnable() {
       @Override
       public void run() {
+        long lastTimeProgressChanged = -1;
+        long maxAllowedTimeWithoutProgress =
+            MAX_ALLOWED_TIME_WITHOUT_PROGRESS_MS.get(conf);
+        CombinedWorkerProgress lastProgress = null;
         while (!finished) {
           if (mappersStarted == conf.getMaxWorkers() + 1 &&
               !workerProgresses.isEmpty()) {
             // Combine and log
             CombinedWorkerProgress combinedWorkerProgress =
-                new CombinedWorkerProgress(workerProgresses.values(), conf);
+                new CombinedWorkerProgress(workerProgresses.values(),
+                    masterProgress.get(), conf);
             if (LOG.isInfoEnabled()) {
               LOG.info(combinedWorkerProgress.toString());
             }
@@ -88,20 +106,69 @@ public class DefaultJobProgressTrackerService
             if (combinedWorkerProgress.isDone(conf.getMaxWorkers())) {
               break;
             }
-          }
-          try {
-            Thread.sleep(UPDATE_MILLISECONDS);
-          } catch (InterruptedException e) {
-            if (LOG.isInfoEnabled()) {
-              LOG.info("Progress thread interrupted");
+
+            if (!canFinishInTime(conf, job, combinedWorkerProgress)) {
+              killJobWithMessage("Killing the job because it won't " +
+                "complete in max allotted time: " +
+                GiraphConstants.MAX_ALLOWED_JOB_TIME_MS.get(conf) / 1000 +
+                "s");
             }
+
+            if (lastProgress == null ||
+                combinedWorkerProgress.madeProgressFrom(lastProgress)) {
+              lastProgress = combinedWorkerProgress;
+              lastTimeProgressChanged = System.currentTimeMillis();
+            } else if (lastTimeProgressChanged +
+                maxAllowedTimeWithoutProgress < System.currentTimeMillis()) {
+              // Job didn't make progress in too long, killing it
+              killJobWithMessage(
+                  "Killing the job because it didn't make progress for " +
+                      maxAllowedTimeWithoutProgress / 1000 + "s");
+              break;
+            }
+          }
+          if (!ThreadUtils.trySleep(UPDATE_MILLISECONDS)) {
             break;
           }
         }
       }
-    });
-    writerThread.setDaemon(true);
-    writerThread.start();
+    }, "progress-writer");
+  }
+
+  /**
+   * Determine if the job will finish in allotted time
+   * @param conf Giraph configuration
+   * @param job Job
+   * @param progress Combined worker progress
+   * @return true it the job can finish in allotted time, false otherwise
+   */
+  protected boolean canFinishInTime(GiraphConfiguration conf, Job job,
+      CombinedWorkerProgress progress) {
+    // No defaut implementation.
+    return true;
+  }
+
+  /**
+   * Kill job with message describing why it's being killed
+   *
+   * @param message Message describing why job is being killed
+   * @return True iff job was killed successfully, false if job was already
+   * done or kill failed
+   */
+  protected boolean killJobWithMessage(String message) {
+    try {
+      if (job.isComplete()) {
+        LOG.info("Job " + job.getJobID() + " is already done");
+        return false;
+      } else {
+        LOG.error(message);
+        job.killJob();
+        return true;
+      }
+    } catch (IOException e) {
+      LOG.error("Failed to kill the job", e);
+      return false;
+    }
   }
 
   @Override
@@ -113,34 +180,21 @@ public class DefaultJobProgressTrackerService
    * Called when job got all mappers, used to check MAX_ALLOWED_JOB_TIME_MS
    * and potentially start a thread which will kill the job after this time
    */
-  private void jobGotAllMappers() {
+  protected void jobGotAllMappers() {
     jobObserver.jobGotAllMappers(job);
     final long maxAllowedJobTimeMs =
         GiraphConstants.MAX_ALLOWED_JOB_TIME_MS.get(conf);
     if (maxAllowedJobTimeMs > 0) {
       // Start a thread which will kill the job if running for too long
-      Thread killThread = new Thread(new Runnable() {
+      ThreadUtils.startThread(new Runnable() {
         @Override
         public void run() {
-          try {
-            Thread.sleep(maxAllowedJobTimeMs);
-            try {
-              LOG.warn("Killing job because it took longer than " +
-                  maxAllowedJobTimeMs + " milliseconds");
-              job.killJob();
-            } catch (IOException e) {
-              LOG.warn("Failed to kill job", e);
-            }
-          } catch (InterruptedException e) {
-            if (LOG.isDebugEnabled()) {
-              LOG.debug("Thread checking for jobs max allowed time " +
-                  "interrupted");
-            }
+          if (ThreadUtils.trySleep(maxAllowedJobTimeMs)) {
+            killJobWithMessage("Killing the job because it took longer than " +
+                maxAllowedJobTimeMs + " milliseconds");
           }
         }
-      });
-      killThread.setDaemon(true);
-      killThread.start();
+      }, "job-runtime-observer");
     }
   }
 
@@ -170,7 +224,8 @@ public class DefaultJobProgressTrackerService
   }
 
   @Override
-  public void logError(String logLine) {
+  public void
+  logError(String logLine, byte [] exByteArray) {
     LOG.error(logLine);
   }
 
@@ -184,6 +239,11 @@ public class DefaultJobProgressTrackerService
   @Override
   public void updateProgress(WorkerProgress workerProgress) {
     workerProgresses.put(workerProgress.getTaskId(), workerProgress);
+  }
+
+  @Override
+  public void updateMasterProgress(MasterProgress masterProgress) {
+    this.masterProgress.set(masterProgress);
   }
 
   @Override

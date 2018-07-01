@@ -51,6 +51,7 @@ import org.apache.giraph.master.MasterObserver;
 import org.apache.giraph.partition.GraphPartitionerFactory;
 import org.apache.giraph.partition.Partition;
 import org.apache.giraph.partition.ReusesObjectsPartition;
+import org.apache.giraph.utils.GcObserver;
 import org.apache.giraph.utils.ReflectionUtils;
 import org.apache.giraph.worker.WorkerContext;
 import org.apache.giraph.worker.WorkerObserver;
@@ -321,6 +322,16 @@ public class GiraphConfiguration extends Configuration
   public final void addMapperObserverClass(
       Class<? extends MapperObserver> mapperObserverClass) {
     MAPPER_OBSERVER_CLASSES.add(this, mapperObserverClass);
+  }
+
+  /**
+   * Add a GcObserver class (optional)
+   *
+   * @param gcObserverClass GcObserver class to add.
+   */
+  public final void addGcObserverClass(
+      Class<? extends GcObserver> gcObserverClass) {
+    GC_OBSERVER_CLASSES.add(this, gcObserverClass);
   }
 
   /**
@@ -707,6 +718,15 @@ public class GiraphConfiguration extends Configuration
   }
 
   /**
+   * Get array of GcObserver classes set in configuration.
+   *
+   * @return array of GcObserver classes.
+   */
+  public Class<? extends GcObserver>[] getGcObserverClasses() {
+    return GC_OBSERVER_CLASSES.getArray(this);
+  }
+
+  /**
    * Whether to track, print, and aggregate metrics.
    *
    * @return true if metrics are enabled, false otherwise (default)
@@ -970,16 +990,6 @@ public class GiraphConfiguration extends Configuration
   }
 
   /**
-   * Use message size encoding?  This feature may help with complex message
-   * objects.
-   *
-   * @return Whether to use message size encoding
-   */
-  public boolean useMessageSizeEncoding() {
-    return USE_MESSAGE_SIZE_ENCODING.get(this);
-  }
-
-  /**
    * Set the checkpoint frequeuncy of how many supersteps to wait before
    * checkpointing
    *
@@ -1104,7 +1114,7 @@ public class GiraphConfiguration extends Configuration
    * Get the local hostname on the given interface.
    *
    * @return The local hostname
-   * @throws UnknownHostException
+   * @throws UnknownHostException IP address of a host could not be determined
    */
   public String getLocalHostname() throws UnknownHostException {
     return DNS.getDefaultHost(
@@ -1116,7 +1126,7 @@ public class GiraphConfiguration extends Configuration
    * Return local host name by default. Or local host IP if preferIP
    * option is set.
    * @return local host name or IP
-   * @throws UnknownHostException
+   * @throws UnknownHostException IP address of a host could not be determined
    */
   public String getLocalHostOrIp() throws UnknownHostException {
     if (GiraphConstants.PREFER_IP_ADDRESSES.get(this)) {
@@ -1165,9 +1175,9 @@ public class GiraphConfiguration extends Configuration
   /**
    * Get string, replacing variables in the output.
    *
-   * %JOB_ID% => job id
-   * %TASK_ID% => task id
-   * %USER% => owning user name
+   * %JOB_ID% =&gt; job id
+   * %TASK_ID% =&gt; task id
+   * %USER% =&gt; owning user name
    *
    * @param key name of key to lookup
    * @param context mapper context
@@ -1180,9 +1190,9 @@ public class GiraphConfiguration extends Configuration
   /**
    * Get string, replacing variables in the output.
    *
-   * %JOB_ID% => job id
-   * %TASK_ID% => task id
-   * %USER% => owning user name
+   * %JOB_ID% =&gt; job id
+   * %TASK_ID% =&gt; task id
+   * %USER% =&gt; owning user name
    *
    * @param key name of key to lookup
    * @param defaultValue value to return if no mapping exists. This can also

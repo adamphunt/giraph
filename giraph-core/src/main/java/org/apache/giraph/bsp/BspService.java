@@ -25,6 +25,7 @@ import org.apache.giraph.job.JobProgressTracker;
 import org.apache.giraph.partition.GraphPartitionerFactory;
 import org.apache.giraph.utils.CheckpointingUtils;
 import org.apache.giraph.worker.WorkerInfo;
+import org.apache.giraph.writable.kryo.GiraphClassResolver;
 import org.apache.giraph.zk.BspEvent;
 import org.apache.giraph.zk.PredicateLock;
 import org.apache.giraph.zk.ZooKeeperExt;
@@ -81,7 +82,9 @@ public abstract class BspService<I extends WritableComparable,
   /** Input splits all done node*/
   public static final String INPUT_SPLITS_ALL_DONE_NODE =
       "/_inputSplitsAllDone";
-
+  /** Directory to store kryo className-ID assignment */
+  public static final String KRYO_REGISTERED_CLASS_DIR =
+          "/_kryo";
   /** Directory of attempts of this application */
   public static final String APPLICATION_ATTEMPTS_DIR =
       "/_applicationAttemptsDir";
@@ -155,6 +158,8 @@ public abstract class BspService<I extends WritableComparable,
   protected final String haltComputationPath;
   /** Path where memory observer stores data */
   protected final String memoryObserverPath;
+  /** Kryo className-ID mapping directory */
+  protected final String kryoRegisteredClassPath;
   /** Private ZooKeeper instance that implements the service */
   private final ZooKeeperExt zk;
   /** Has the Connection occurred? */
@@ -188,12 +193,12 @@ public abstract class BspService<I extends WritableComparable,
   private long cachedApplicationAttempt = UNSET_APPLICATION_ATTEMPT;
   /** Job id, to ensure uniqueness */
   private final String jobId;
-  /** Task partition, to ensure uniqueness */
-  private final int taskPartition;
+  /** Task id, from partition and application attempt to ensure uniqueness */
+  private final int taskId;
   /** My hostname */
   private final String hostname;
-  /** Combination of hostname '_' partition (unique id) */
-  private final String hostnamePartitionId;
+  /** Combination of hostname '_' task (unique id) */
+  private final String hostnameTaskId;
   /** Graph partitioner */
   private final GraphPartitionerFactory<I, V, E> graphPartitionerFactory;
   /** Mapper that will do the graph computation */
@@ -231,8 +236,8 @@ public abstract class BspService<I extends WritableComparable,
     this.context = context;
     this.graphTaskManager = graphTaskManager;
     this.conf = graphTaskManager.getConf();
+
     this.jobId = conf.getJobId();
-    this.taskPartition = conf.getTaskPartition();
     this.restartedSuperstep = conf.getLong(
         GiraphConstants.RESTART_SUPERSTEP, UNSET_SUPERSTEP);
     try {
@@ -240,7 +245,6 @@ public abstract class BspService<I extends WritableComparable,
     } catch (UnknownHostException e) {
       throw new RuntimeException(e);
     }
-    this.hostnamePartitionId = hostname + "_" + getTaskPartition();
     this.graphPartitionerFactory = conf.createGraphPartitioner();
 
     basePath = ZooKeeperManager.getBasePath(conf) + BASE_DIR + "/" + jobId;
@@ -251,6 +255,8 @@ public abstract class BspService<I extends WritableComparable,
     inputSplitsAllDonePath = basePath + INPUT_SPLITS_ALL_DONE_NODE;
     applicationAttemptsPath = basePath + APPLICATION_ATTEMPTS_DIR;
     cleanedUpPath = basePath + CLEANED_UP_DIR;
+    kryoRegisteredClassPath = basePath + KRYO_REGISTERED_CLASS_DIR;
+
 
     String restartJobId = RESTART_JOB_ID.get(conf);
 
@@ -272,7 +278,7 @@ public abstract class BspService<I extends WritableComparable,
     }
     if (LOG.isInfoEnabled()) {
       LOG.info("BspService: Connecting to ZooKeeper with job " + jobId +
-          ", " + getTaskPartition() + " on " + serverPortList);
+          ", partition " + conf.getTaskPartition() + " on " + serverPortList);
     }
     try {
       this.zk = new ZooKeeperExt(serverPortList,
@@ -281,11 +287,21 @@ public abstract class BspService<I extends WritableComparable,
                                  conf.getZookeeperOpsRetryWaitMsecs(),
                                  this,
                                  context);
-      connectedEvent.waitForever();
+      connectedEvent.waitForTimeoutOrFail(
+          GiraphConstants.WAIT_ZOOKEEPER_TIMEOUT_MSEC.get(conf));
       this.fs = FileSystem.get(getConfiguration());
     } catch (IOException e) {
       throw new RuntimeException(e);
     }
+
+    boolean disableGiraphResolver =
+            GiraphConstants.DISABLE_GIRAPH_CLASS_RESOLVER.get(conf);
+    if (!disableGiraphResolver) {
+      GiraphClassResolver.setZookeeperInfo(zk, kryoRegisteredClassPath);
+    }
+    this.taskId = (int) getApplicationAttempt() * conf.getMaxWorkers() +
+            conf.getTaskPartition();
+    this.hostnameTaskId = hostname + "_" + getTaskId();
 
     //Trying to restart from the latest superstep
     if (restartJobId != null &&
@@ -528,12 +544,12 @@ public abstract class BspService<I extends WritableComparable,
     return hostname;
   }
 
-  public final String getHostnamePartitionId() {
-    return hostnamePartitionId;
+  public final String getHostnameTaskId() {
+    return hostnameTaskId;
   }
 
-  public final int getTaskPartition() {
-    return taskPartition;
+  public final int getTaskId() {
+    return taskId;
   }
 
   public final GraphTaskManager<I, V, E> getGraphTaskManager() {

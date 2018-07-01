@@ -95,8 +95,10 @@ public class FixedPartitionsOracle implements OutOfCoreOracle {
         IOAction.LOAD_PARTITION,
         IOAction.STORE_MESSAGES_AND_BUFFERS};
     } else if (numPartitions > maxPartitionsInMemory) {
-      LOG.warn("getNextIOActions: number of partitions in memory passed the " +
-          "specified threshold!");
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("getNextIOActions: number of partitions in memory passed " +
+          "the specified threshold!");
+      }
       return new IOAction[]{
         IOAction.STORE_PARTITION,
         IOAction.STORE_MESSAGES_AND_BUFFERS};
@@ -143,5 +145,6 @@ public class FixedPartitionsOracle implements OutOfCoreOracle {
   public void gcCompleted(GarbageCollectionNotificationInfo gcInfo) { }
 
   @Override
-  public void shutdown() { }
+  public void startIteration() {
+  }
 }

@@ -33,16 +33,20 @@ import java.util.Iterator;
 /**
  * Base class for writing computations in Jython.
  *
- * Note that this class DOES NOT implement {@link Computation}. This is because
- * we want to support passing in pure Jython types, and implementing the
- * {@link Computation} requires passing in {@link Writable}s. Calling such
- * methods from Jython would throw errors. So, instead, we have recreated the
- * methods with the same name here. In each method we check if the type is a
- * pure Jython value, and if so wrap it in the necessary
- * {@link JythonWritableWrapper}.
+ * Note that this class DOES NOT implement
+ * {@link org.apache.giraph.graph.Computation}.
+ * This is because we want to support passing in pure Jython types,
+ * and implementing the {@link org.apache.giraph.graph.Computation}
+ * requires passing in {@link Writable}s.
+ * Calling such methods from Jython would throw errors. So, instead,
+ * we have recreated the methods with the same name here. In each method
+ * we check if the type is a pure Jython value, and if so wrap it in
+ * the necessary
+ * {@link org.apache.giraph.jython.wrappers.JythonWritableWrapper}.
  *
  * This class works together with {@link JythonGiraphComputation} which takes
- * care of the {@link Computation} Giraph infrastructure side of things.
+ * care of the {@link org.apache.giraph.graph.Computation}
+ * Giraph infrastructure side of things.
  */
 public abstract class JythonComputation extends
     DefaultImmutableClassesGiraphConfigurable {
@@ -63,7 +67,7 @@ public abstract class JythonComputation extends
 
   /**
    * Prepare for computation. This method is executed exactly once prior to
-   * {@link #compute(Vertex, Iterable)} being called for any of the vertices
+   * {@link #compute(Object, Iterable)} being called for any of the vertices
    * in the partition.
    */
   public void preSuperstep() { }

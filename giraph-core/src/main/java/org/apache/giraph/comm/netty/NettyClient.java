@@ -69,6 +69,7 @@ import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelFutureListener;
+import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
@@ -236,7 +237,7 @@ public class NettyClient {
     if (limitNumberOfOpenRequests) {
       flowControl = new StaticFlowControl(conf, this);
     } else if (limitOpenRequestsPerWorker) {
-      flowControl = new CreditBasedFlowControl(conf, this);
+      flowControl = new CreditBasedFlowControl(conf, this, exceptionHandler);
     } else {
       flowControl = new NoOpFlowControl(this);
     }
@@ -375,7 +376,27 @@ public class NettyClient {
             }
 /*end[HADOOP_NON_SECURE]*/
           }
+
+          @Override
+          public void channelUnregistered(ChannelHandlerContext ctx) throws
+              Exception {
+            super.channelUnregistered(ctx);
+            LOG.error("Channel failed " + ctx.channel());
+            checkRequestsAfterChannelFailure(ctx.channel());
+          }
         });
+
+    // Start a thread which will observe if there are any problems with open
+    // requests
+    ThreadUtils.startThread(new Runnable() {
+      @Override
+      public void run() {
+        while (true) {
+          ThreadUtils.trySleep(waitingRequestMsecs);
+          checkRequestsForProblems();
+        }
+      }
+    }, "open-requests-observer");
   }
 
   /**
@@ -512,7 +533,8 @@ public class NettyClient {
               addressChannelMap.get(waitingConnection.address);
           if (rotater == null) {
             ChannelRotater newRotater =
-                new ChannelRotater(waitingConnection.taskId);
+                new ChannelRotater(waitingConnection.taskId,
+                    waitingConnection.address);
             rotater = addressChannelMap.putIfAbsent(
                 waitingConnection.address, newRotater);
             if (rotater == null) {
@@ -623,7 +645,6 @@ public class NettyClient {
     if (LOG.isInfoEnabled()) {
       LOG.info("stop: Halting netty client");
     }
-    flowControl.shutdown();
     // Close connections asynchronously, in a Netty-approved
     // way, without cleaning up thread pools until all channels
     // in addressChannelMap are closed (success or failure)
@@ -706,11 +727,7 @@ public class NettyClient {
           " on attempt " + reconnectFailures + " out of " +
           maxConnectionFailures + " max attempts, sleeping for 5 secs",
           connectionFuture.cause());
-      try {
-        Thread.sleep(5000);
-      } catch (InterruptedException e) {
-        LOG.warn("getNextChannel: Unexpected interrupted exception", e);
-      }
+      ThreadUtils.trySleep(5000);
     }
     throw new IllegalStateException("getNextChannel: Failed to connect " +
         "to " + remoteServer + " in " + reconnectFailures +
@@ -749,7 +766,6 @@ public class NettyClient {
     }
 /*end[HADOOP_NON_SECURE]*/
 
-    Channel channel = getNextChannel(remoteServer);
     RequestInfo newRequestInfo = new RequestInfo(remoteServer, request);
     if (registerRequest) {
       request.setClientId(myTaskInfo.getTaskId());
@@ -771,10 +787,20 @@ public class NettyClient {
         ", size " + request.getSerializedSize() +
         " bytes. Check netty buffer size.");
     }
-    ChannelFuture writeFuture = channel.write(request);
-    newRequestInfo.setWriteFuture(writeFuture);
-    writeFuture.addListener(logErrorListener);
+    writeRequestToChannel(newRequestInfo);
     return requestId;
+  }
+
+  /**
+   * Write request to a channel for its destination
+   *
+   * @param requestInfo Request info
+   */
+  private void writeRequestToChannel(RequestInfo requestInfo) {
+    Channel channel = getNextChannel(requestInfo.getDestinationAddress());
+    ChannelFuture writeFuture = channel.write(requestInfo.getRequest());
+    requestInfo.setWriteFuture(writeFuture);
+    writeFuture.addListener(logErrorListener);
   }
 
   /**
@@ -857,7 +883,6 @@ public class NettyClient {
     logInfoAboutOpenRequests();
     // Make sure that waiting doesn't kill the job
     context.progress();
-    checkRequestsForProblems();
   }
 
   /**
@@ -937,9 +962,9 @@ public class NettyClient {
         ChannelFuture writeFuture = requestInfo.getWriteFuture();
         // If not connected anymore, request failed, or the request is taking
         // too long, re-establish and resend
-        return !writeFuture.channel().isActive() ||
-          (writeFuture.isDone() && !writeFuture.isSuccess()) ||
-          (requestInfo.getElapsedMsecs() > maxRequestMilliseconds);
+        return (writeFuture != null && (!writeFuture.channel().isActive() ||
+            (writeFuture.isDone() && !writeFuture.isSuccess()))) ||
+            (requestInfo.getElapsedMsecs() > maxRequestMilliseconds);
       }
     });
   }
@@ -960,21 +985,23 @@ public class NettyClient {
     for (Map.Entry<ClientRequestId, RequestInfo> entry :
         clientRequestIdRequestInfoMap.entrySet()) {
       RequestInfo requestInfo = entry.getValue();
-      ChannelFuture writeFuture = requestInfo.getWriteFuture();
-      // Request wasn't sent yet
-      if (writeFuture == null) {
-        continue;
-      }
       // If request should be resent
       if (shouldResendRequestPredicate.apply(requestInfo)) {
+        ChannelFuture writeFuture = requestInfo.getWriteFuture();
+        String logMessage;
+        if (writeFuture == null) {
+          logMessage = "wasn't sent successfully";
+        } else {
+          logMessage = "connected = " +
+              writeFuture.channel().isActive() +
+              ", future done = " + writeFuture.isDone() + ", " +
+              "success = " + writeFuture.isSuccess() + ", " +
+              "cause = " + writeFuture.cause();
+        }
         LOG.warn("checkRequestsForProblems: Problem with request id " +
-            entry.getKey() + " connected = " +
-            writeFuture.channel().isActive() +
-            ", future done = " + writeFuture.isDone() + ", " +
-            "success = " + writeFuture.isSuccess() + ", " +
-            "cause = " + writeFuture.cause() + ", " +
+            entry.getKey() + ", " + logMessage + ", " +
             "elapsed time = " + requestInfo.getElapsedMsecs() + ", " +
-            "destination = " + writeFuture.channel().remoteAddress() +
+            "destination = " + requestInfo.getDestinationAddress() +
             " " + requestInfo);
         addedRequestIds.add(entry.getKey());
         addedRequestInfos.add(new RequestInfo(
@@ -992,14 +1019,10 @@ public class NettyClient {
             " completed prior to sending the next request");
         clientRequestIdRequestInfoMap.remove(requestId);
       }
-      InetSocketAddress remoteServer = requestInfo.getDestinationAddress();
-      Channel channel = getNextChannel(remoteServer);
       if (LOG.isInfoEnabled()) {
         LOG.info("checkRequestsForProblems: Re-issuing request " + requestInfo);
       }
-      ChannelFuture writeFuture = channel.write(requestInfo.getRequest());
-      requestInfo.setWriteFuture(writeFuture);
-      writeFuture.addListener(logErrorListener);
+      writeRequestToChannel(requestInfo);
     }
     addedRequestIds.clear();
     addedRequestInfos.clear();
@@ -1026,11 +1049,7 @@ public class NettyClient {
       LOG.warn("resolveAddress: Failed to resolve " + address +
           " on attempt " + resolveAttempts + " of " +
           maxResolveAddressAttempts + " attempts, sleeping for 5 seconds");
-      try {
-        Thread.sleep(5000);
-      } catch (InterruptedException e) {
-        LOG.warn("resolveAddress: Interrupted.", e);
-      }
+      ThreadUtils.trySleep(5000);
       address = new InetSocketAddress(hostOrIp,
           address.getPort());
     }
@@ -1065,13 +1084,14 @@ public class NettyClient {
   /**
    * Resend requests related to channel which failed
    *
-   * @param future ChannelFuture of the failed channel
+   * @param channel Channel which failed
    */
-  private void checkRequestsAfterChannelFailure(final ChannelFuture future) {
+  private void checkRequestsAfterChannelFailure(final Channel channel) {
     resendRequestsWhenNeeded(new Predicate<RequestInfo>() {
       @Override
       public boolean apply(RequestInfo requestInfo) {
-        return requestInfo.getWriteFuture() == future;
+        return requestInfo.getDestinationAddress().equals(
+            channel.remoteAddress());
       }
     });
   }
@@ -1087,7 +1107,7 @@ public class NettyClient {
     public void operationComplete(ChannelFuture future) throws Exception {
       if (future.isDone() && !future.isSuccess()) {
         LOG.error("Request failed", future.cause());
-        checkRequestsAfterChannelFailure(future);
+        checkRequestsAfterChannelFailure(future.channel());
       }
     }
   }

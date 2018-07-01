@@ -27,17 +27,22 @@ import org.apache.giraph.comm.messages.InMemoryMessageStoreFactory;
 import org.apache.giraph.comm.messages.MessageEncodeAndStoreType;
 import org.apache.giraph.comm.messages.MessageStoreFactory;
 import org.apache.giraph.edge.ByteArrayEdges;
+import org.apache.giraph.edge.DefaultCreateSourceVertexCallback;
+import org.apache.giraph.edge.CreateSourceVertexCallback;
 import org.apache.giraph.edge.EdgeStoreFactory;
 import org.apache.giraph.edge.InMemoryEdgeStoreFactory;
 import org.apache.giraph.edge.OutEdges;
 import org.apache.giraph.factories.ComputationFactory;
 import org.apache.giraph.factories.DefaultComputationFactory;
 import org.apache.giraph.factories.DefaultEdgeValueFactory;
+import org.apache.giraph.factories.DefaultInputOutEdgesFactory;
 import org.apache.giraph.factories.DefaultMessageValueFactory;
+import org.apache.giraph.factories.DefaultOutEdgesFactory;
 import org.apache.giraph.factories.DefaultVertexIdFactory;
 import org.apache.giraph.factories.DefaultVertexValueFactory;
 import org.apache.giraph.factories.EdgeValueFactory;
 import org.apache.giraph.factories.MessageValueFactory;
+import org.apache.giraph.factories.OutEdgesFactory;
 import org.apache.giraph.factories.VertexIdFactory;
 import org.apache.giraph.factories.VertexValueFactory;
 import org.apache.giraph.graph.Computation;
@@ -73,12 +78,13 @@ import org.apache.giraph.master.MasterCompute;
 import org.apache.giraph.master.MasterObserver;
 import org.apache.giraph.ooc.persistence.OutOfCoreDataAccessor;
 import org.apache.giraph.ooc.persistence.LocalDiskDataAccessor;
+import org.apache.giraph.ooc.policy.MemoryEstimatorOracle;
 import org.apache.giraph.ooc.policy.OutOfCoreOracle;
-import org.apache.giraph.ooc.policy.ThresholdBasedOracle;
 import org.apache.giraph.partition.GraphPartitionerFactory;
 import org.apache.giraph.partition.HashPartitionerFactory;
 import org.apache.giraph.partition.Partition;
 import org.apache.giraph.partition.SimplePartition;
+import org.apache.giraph.utils.GcObserver;
 import org.apache.giraph.worker.DefaultWorkerContext;
 import org.apache.giraph.worker.WorkerContext;
 import org.apache.giraph.worker.WorkerObserver;
@@ -86,6 +92,7 @@ import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableComparable;
 import org.apache.hadoop.mapreduce.OutputFormat;
 
+import static java.util.concurrent.TimeUnit.HOURS;
 import static java.util.concurrent.TimeUnit.MINUTES;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
@@ -195,6 +202,16 @@ public interface GiraphConstants {
       ClassConfOption.create("giraph.inputOutEdgesClass",
           ByteArrayEdges.class, OutEdges.class,
           "Vertex edges class to be used during edge input only - optional");
+  /** OutEdges factory class - optional */
+  ClassConfOption<OutEdgesFactory> VERTEX_EDGES_FACTORY_CLASS =
+      ClassConfOption.create("giraph.outEdgesFactoryClass",
+        DefaultOutEdgesFactory.class, OutEdgesFactory.class,
+          "OutEdges factory class - optional");
+  /** OutEdges for input factory class - optional */
+  ClassConfOption<OutEdgesFactory> INPUT_VERTEX_EDGES_FACTORY_CLASS =
+      ClassConfOption.create("giraph.inputOutEdgesFactoryClass",
+        DefaultInputOutEdgesFactory.class, OutEdgesFactory.class,
+          "OutEdges for input factory class - optional");
 
   /** Class for Master - optional */
   ClassConfOption<MasterCompute> MASTER_COMPUTE_CLASS =
@@ -213,6 +230,10 @@ public interface GiraphConstants {
   ClassConfOption<MapperObserver> MAPPER_OBSERVER_CLASSES =
       ClassConfOption.create("giraph.mapper.observers", null,
           MapperObserver.class, "Classes for Mapper Observer - optional");
+  /** Classes for GC Observer - optional */
+  ClassConfOption<GcObserver> GC_OBSERVER_CLASSES =
+      ClassConfOption.create("giraph.gc.observers", null,
+          GcObserver.class, "Classes for GC oObserver - optional");
   /** Message combiner class - optional */
   ClassConfOption<MessageCombiner> MESSAGE_COMBINER_CLASS =
       ClassConfOption.create("giraph.messageCombinerClass", null,
@@ -984,7 +1005,7 @@ public interface GiraphConstants {
    */
   ClassConfOption<OutOfCoreOracle> OUT_OF_CORE_ORACLE =
       ClassConfOption.create("giraph.outOfCoreOracle",
-          ThresholdBasedOracle.class, OutOfCoreOracle.class,
+          MemoryEstimatorOracle.class, OutOfCoreOracle.class,
           "Out-of-core oracle that is to be used for adaptive out-of-core " +
               "engine");
 
@@ -1099,7 +1120,7 @@ public interface GiraphConstants {
           "edges every time.");
 
   /**
-   * This option will tell which message encode & store enum to use when
+   * This option will tell which message encode &amp; store enum to use when
    * combining is not enabled
    */
   EnumConfOption<MessageEncodeAndStoreType> MESSAGE_ENCODE_AND_STORE_TYPE =
@@ -1116,6 +1137,18 @@ public interface GiraphConstants {
       new BooleanConfOption("giraph.createEdgeSourceVertices", true,
           "Create a source vertex if present in edge input but not " +
           "necessarily in vertex input");
+
+  /**
+   * Defines a call back that can be used to make decisions on
+   * whether the vertex should be created or not in the runtime.
+   */
+  ClassConfOption<CreateSourceVertexCallback>
+      CREATE_EDGE_SOURCE_VERTICES_CALLBACK =
+      ClassConfOption.create("giraph.createEdgeSourceVerticesCallback",
+          DefaultCreateSourceVertexCallback.class,
+          CreateSourceVertexCallback.class,
+          "Decide whether we should create a source vertex when id is " +
+              "present in the edge input but not in vertex input");
 
   /**
    * This counter group will contain one counter whose name is the ZooKeeper
@@ -1165,6 +1198,15 @@ public interface GiraphConstants {
           DefaultJobProgressTrackerService.class,
           JobProgressTrackerService.class,
           "Class to use to track job progress on client");
+
+  /**
+   * Minimum number of vertices to compute before adding to worker progress.
+   */
+  LongConfOption VERTICES_TO_UPDATE_PROGRESS =
+          new LongConfOption("giraph.VerticesToUpdateProgress", 100000,
+                  "Minimum number of vertices to compute before " +
+                          "updating worker progress");
+
 
   /** Number of retries for creating the HDFS files */
   IntConfOption HDFS_FILE_CREATION_RETRIES =
@@ -1224,5 +1266,41 @@ public interface GiraphConstants {
   BooleanConfOption PREFER_IP_ADDRESSES =
       new BooleanConfOption("giraph.preferIP", false,
       "Prefer IP addresses instead of host names");
+
+  /**
+   * Timeout for "waitForever", when we need to wait for zookeeper.
+   * Since we should never really have to wait forever.
+   * We should only wait some reasonable but large amount of time.
+   */
+  LongConfOption WAIT_ZOOKEEPER_TIMEOUT_MSEC =
+      new LongConfOption("giraph.waitZookeeperTimeoutMsec",
+          MINUTES.toMillis(15),
+          "How long should we stay in waitForever loops in various " +
+              "places that require network connection");
+
+  /**
+   * Timeout for "waitForever", when we need to wait for other workers
+   * to complete their job.
+   * Since we should never really have to wait forever.
+   * We should only wait some reasonable but large amount of time.
+   */
+  LongConfOption WAIT_FOR_OTHER_WORKERS_TIMEOUT_MSEC =
+      new LongConfOption("giraph.waitForOtherWorkersMsec",
+          HOURS.toMillis(48),
+          "How long should workers wait to finish superstep");
+
+  /** Number of supersteps job will run for */
+  IntConfOption SUPERSTEP_COUNT = new IntConfOption("giraph.numSupersteps", -1,
+      "Number of supersteps job will run for");
+
+  /** Whether to disable GiraphClassResolver which is an efficient
+   * implementation of kryo class resolver. By default this resolver is used by
+   * KryoSimpleWritable and KryoSimpleWrapper, and can be disabled with this
+   * option */
+  BooleanConfOption DISABLE_GIRAPH_CLASS_RESOLVER =
+          new BooleanConfOption("giraph.disableGiraphClassResolver", false,
+            "Disables GiraphClassResolver, which is a custom implementation " +
+            "of kryo class resolver that avoids writing class names to the " +
+            "underlying stream for faster serialization.");
 }
 // CHECKSTYLE: resume InterfaceIsTypeCheck

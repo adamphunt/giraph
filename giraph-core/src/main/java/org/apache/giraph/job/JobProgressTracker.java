@@ -20,6 +20,8 @@ package org.apache.giraph.job;
 
 import com.facebook.swift.service.ThriftMethod;
 import com.facebook.swift.service.ThriftService;
+
+import org.apache.giraph.master.MasterProgress;
 import org.apache.giraph.worker.WorkerProgress;
 
 /**
@@ -41,13 +43,17 @@ public interface JobProgressTracker {
   void logInfo(String logLine);
 
   /**
-   * Call this when you want to log an error line from any mapper to command
-   * line
+   * Call this when you want to log an error line and exception
+   * object from any mapper to command line
+   *
+   * KryoWritableWrapper.convertFromByteArray can be used to
+   * get exception object back
    *
    * @param logLine Line to log
+   * @param exByteArray Exception byte array
    */
   @ThriftMethod
-  void logError(String logLine);
+  void logError(String logLine, byte [] exByteArray);
 
   /**
    * Notify that job is failing
@@ -64,5 +70,13 @@ public interface JobProgressTracker {
    */
   @ThriftMethod
   void updateProgress(WorkerProgress workerProgress);
+
+  /**
+   * Master should call this method to update its progress
+   *
+   * @param masterProgress Progress of the master
+   */
+  @ThriftMethod
+  void updateMasterProgress(MasterProgress masterProgress);
 }
 

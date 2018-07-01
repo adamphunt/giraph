@@ -54,7 +54,7 @@ public class PartitionUtils {
   private PartitionUtils() { }
 
   /**
-   * Compare edge counts for Entry<WorkerInfo, VertexEdgeCount> objects.
+   * Compare edge counts for Entry&lt;WorkerInfo, VertexEdgeCount&gt; objects.
    */
   private static class EdgeCountComparator implements
       Comparator<Entry<WorkerInfo, VertexEdgeCount>>, Serializable {
@@ -136,14 +136,6 @@ public class PartitionUtils {
         Lists.newArrayList(workerStatsMap.entrySet());
 
     if (LOG.isInfoEnabled()) {
-      StringBuilder sb = new StringBuilder();
-      for (Entry<WorkerInfo, VertexEdgeCount> worker : workerEntryList) {
-        sb.append(worker.getKey());
-        sb.append(":");
-        sb.append(worker.getValue());
-        sb.append(",");
-      }
-      LOG.info("analyzePartitionStats: [" + sb + "]");
       Collections.sort(workerEntryList, new VertexCountComparator());
       LOG.info("analyzePartitionStats: Vertices - Mean: " +
           (totalVertexEdgeCount.getVertexCount() /

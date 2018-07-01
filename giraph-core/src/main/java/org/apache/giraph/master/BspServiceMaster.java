@@ -18,26 +18,9 @@
 
 package org.apache.giraph.master;
 
-import static org.apache.giraph.conf.GiraphConstants.INPUT_SPLIT_SAMPLE_PERCENT;
-import static org.apache.giraph.conf.GiraphConstants.KEEP_ZOOKEEPER_DATA;
-import static org.apache.giraph.conf.GiraphConstants.PARTITION_LONG_TAIL_MIN_PRINT;
-
-import java.io.DataInputStream;
-import java.io.IOException;
-import java.io.PrintStream;
-import java.nio.charset.Charset;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.Comparator;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Set;
-import java.util.TreeSet;
-import java.util.concurrent.TimeUnit;
-
+import com.google.common.collect.Lists;
+import com.google.common.collect.Sets;
 import net.iharder.Base64;
-
 import org.apache.commons.io.FilenameUtils;
 import org.apache.giraph.bsp.ApplicationState;
 import org.apache.giraph.bsp.BspInputFormat;
@@ -62,9 +45,9 @@ import org.apache.giraph.graph.GraphState;
 import org.apache.giraph.graph.GraphTaskManager;
 import org.apache.giraph.io.EdgeInputFormat;
 import org.apache.giraph.io.GiraphInputFormat;
+import org.apache.giraph.io.InputType;
 import org.apache.giraph.io.MappingInputFormat;
 import org.apache.giraph.io.VertexInputFormat;
-import org.apache.giraph.io.InputType;
 import org.apache.giraph.master.input.MasterInputSplitsHandler;
 import org.apache.giraph.metrics.AggregatedMetrics;
 import org.apache.giraph.metrics.GiraphMetrics;
@@ -106,8 +89,23 @@ import org.apache.zookeeper.ZooDefs.Ids;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-import com.google.common.collect.Lists;
-import com.google.common.collect.Sets;
+import java.io.DataInputStream;
+import java.io.IOException;
+import java.io.PrintStream;
+import java.nio.charset.Charset;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.TreeSet;
+import java.util.concurrent.TimeUnit;
+
+import static org.apache.giraph.conf.GiraphConstants.INPUT_SPLIT_SAMPLE_PERCENT;
+import static org.apache.giraph.conf.GiraphConstants.KEEP_ZOOKEEPER_DATA;
+import static org.apache.giraph.conf.GiraphConstants.PARTITION_LONG_TAIL_MIN_PRINT;
 
 /**
  * ZooKeeper-based implementation of {@link CentralizedServiceMaster}.
@@ -174,8 +172,6 @@ public class BspServiceMaster<I extends WritableComparable,
   private MasterInfo masterInfo;
   /** List of workers in current superstep, sorted by task id */
   private List<WorkerInfo> chosenWorkerInfoList = Lists.newArrayList();
-  /** Limit locality information added to each InputSplit znode */
-  private final int localityLimit = 5;
   /** Observers over master lifecycle. */
   private final MasterObserver[] observers;
 
@@ -223,7 +219,7 @@ public class BspServiceMaster<I extends WritableComparable,
     if (conf.isReactiveJmapHistogramDumpEnabled()) {
       conf.addMasterObserverClass(ReactiveJMapHistoDumper.class);
     }
-    observers = conf.createMasterObservers();
+    observers = conf.createMasterObservers(context);
 
     this.checkpointFrequency = conf.getCheckpointFrequency();
     this.checkpointStatus = CheckpointStatus.NONE;
@@ -337,6 +333,7 @@ public class BspServiceMaster<I extends WritableComparable,
         INPUT_SPLIT_SAMPLE_PERCENT.get(getConfiguration());
     if (samplePercent != INPUT_SPLIT_SAMPLE_PERCENT.getDefaultValue()) {
       int lastIndex = (int) (samplePercent * splits.size() / 100f);
+      Collections.shuffle(splits);
       List<InputSplit> sampleSplits = splits.subList(0, lastIndex);
       LOG.warn(logPrefix + ": Using sampling - Processing only " +
           sampleSplits.size() + " instead of " + splits.size() +
@@ -370,13 +367,21 @@ public class BspServiceMaster<I extends WritableComparable,
           new org.apache.hadoop.mapred.JobClient(
             (org.apache.hadoop.mapred.JobConf)
             getContext().getConfiguration());
-        @SuppressWarnings("deprecation")
-        JobID jobId = JobID.forName(getJobId());
-        RunningJob job = jobClient.getJob(jobId);
-        if (job != null) {
-          job.killJob();
-        } else {
-          LOG.error("Jon not found for jobId=" + getJobId());
+        try {
+          @SuppressWarnings("deprecation")
+          JobID jobId = JobID.forName(getJobId());
+          RunningJob job = jobClient.getJob(jobId);
+          if (job != null) {
+            job.killJob();
+          } else {
+            LOG.error("Job not found for jobId=" + getJobId());
+          }
+        } catch (IllegalArgumentException iae) {
+          LOG.info("This job (" + getJobId() +
+                       ") is not a legacy Hadoop job and will " +
+                       "continue with failure cleanup." +
+                       e.getMessage(),
+                   e);
         }
       }
     } catch (IOException ioe) {
@@ -573,15 +578,15 @@ public class BspServiceMaster<I extends WritableComparable,
     if (LOG.isInfoEnabled()) {
       Set<Integer> partitionSet = new TreeSet<Integer>();
       for (WorkerInfo workerInfo : healthyWorkerInfoList) {
-        partitionSet.add(workerInfo.getTaskId());
+        partitionSet.add(workerInfo.getTaskId() % maxWorkers);
       }
       for (WorkerInfo workerInfo : unhealthyWorkerInfoList) {
-        partitionSet.add(workerInfo.getTaskId());
+        partitionSet.add(workerInfo.getTaskId() % maxWorkers);
       }
       for (int i = 1; i <= maxWorkers; ++i) {
         if (partitionSet.contains(Integer.valueOf(i))) {
           continue;
-        } else if (i == getTaskPartition()) {
+        } else if (i == getTaskId() % maxWorkers) {
           continue;
         } else {
           LOG.info("logMissingWorkersOnSuperstep: No response from " +
@@ -659,24 +664,28 @@ public class BspServiceMaster<I extends WritableComparable,
 
   @Override
   public int createVertexInputSplits() {
-    // Short-circuit if there is no vertex input format
-    if (!getConfiguration().hasVertexInputFormat()) {
-      return 0;
+    int splits = 0;
+    if (getConfiguration().hasVertexInputFormat()) {
+      VertexInputFormat<I, V, E> vertexInputFormat =
+          getConfiguration().createWrappedVertexInputFormat();
+      splits = createInputSplits(vertexInputFormat, InputType.VERTEX);
     }
-    VertexInputFormat<I, V, E> vertexInputFormat =
-        getConfiguration().createWrappedVertexInputFormat();
-    return createInputSplits(vertexInputFormat, InputType.VERTEX);
+    MasterProgress.get().setVertexInputSplitCount(splits);
+    getJobProgressTracker().updateMasterProgress(MasterProgress.get());
+    return splits;
   }
 
   @Override
   public int createEdgeInputSplits() {
-    // Short-circuit if there is no edge input format
-    if (!getConfiguration().hasEdgeInputFormat()) {
-      return 0;
+    int splits = 0;
+    if (getConfiguration().hasEdgeInputFormat()) {
+      EdgeInputFormat<I, E> edgeInputFormat =
+          getConfiguration().createWrappedEdgeInputFormat();
+      splits = createInputSplits(edgeInputFormat, InputType.EDGE);
     }
-    EdgeInputFormat<I, E> edgeInputFormat =
-        getConfiguration().createWrappedEdgeInputFormat();
-    return createInputSplits(edgeInputFormat, InputType.EDGE);
+    MasterProgress.get().setEdgeInputSplitsCount(splits);
+    getJobProgressTracker().updateMasterProgress(MasterProgress.get());
+    return splits;
   }
 
   @Override
@@ -792,7 +801,7 @@ public class BspServiceMaster<I extends WritableComparable,
     try {
       myBid =
           getZkExt().createExt(masterElectionPath +
-              "/" + getHostnamePartitionId(),
+              "/" + getHostnameTaskId(),
               null,
               Ids.OPEN_ACL_UNSAFE,
               CreateMode.EPHEMERAL_SEQUENTIAL,
@@ -831,12 +840,12 @@ public class BspServiceMaster<I extends WritableComparable,
         }
         if (masterChildArr.get(0).equals(myBid)) {
           GiraphStats.getInstance().getCurrentMasterTaskPartition().
-              setValue(getTaskPartition());
+              setValue(getTaskId());
 
           globalCommHandler = new MasterGlobalCommHandler(
               new MasterAggregatorHandler(getConfiguration(), getContext()),
               new MasterInputSplitsHandler(
-                  getConfiguration().useInputSplitLocality()));
+                  getConfiguration().useInputSplitLocality(), getContext()));
           aggregatorTranslation = new AggregatorToGlobalCommTranslation(
               getConfiguration(), globalCommHandler);
 
@@ -850,7 +859,7 @@ public class BspServiceMaster<I extends WritableComparable,
                   getGraphTaskManager().createUncaughtExceptionHandler());
           masterInfo.setInetSocketAddress(masterServer.getMyAddress(),
               masterServer.getLocalHostOrIp());
-          masterInfo.setTaskId(getTaskPartition());
+          masterInfo.setTaskId(getTaskId());
           masterClient =
               new NettyMasterClient(getContext(), getConfiguration(), this,
                   getGraphTaskManager().createUncaughtExceptionHandler());
@@ -863,7 +872,9 @@ public class BspServiceMaster<I extends WritableComparable,
           return isMaster;
         }
         LOG.info("becomeMaster: Waiting to become the master...");
-        getMasterElectionChildrenChangedEvent().waitForever();
+        getMasterElectionChildrenChangedEvent().waitForTimeoutOrFail(
+            GiraphConstants.WAIT_ZOOKEEPER_TIMEOUT_MSEC.get(
+                getConfiguration()));
         getMasterElectionChildrenChangedEvent().reset();
       } catch (KeeperException e) {
         throw new IllegalStateException(
@@ -970,6 +981,10 @@ public class BspServiceMaster<I extends WritableComparable,
         aggregatedMetrics.print(superstep, System.err);
       } else {
         printAggregatedMetricsToHDFS(superstep, aggregatedMetrics);
+      }
+      for (MasterObserver observer : observers) {
+        observer.superstepMetricsUpdate(
+            superstep, aggregatedMetrics, allPartitionStatsList);
       }
     }
 
@@ -1199,6 +1214,7 @@ public class BspServiceMaster<I extends WritableComparable,
     setApplicationAttempt(getApplicationAttempt() + 1);
     setCachedSuperstep(checkpoint);
     setRestartedSuperstep(checkpoint);
+    checkpointStatus = CheckpointStatus.NONE;
     setJobState(ApplicationState.START_SUPERSTEP,
         getApplicationAttempt(),
         checkpoint);
@@ -1281,6 +1297,7 @@ public class BspServiceMaster<I extends WritableComparable,
     String workerInfoHealthyPath =
         getWorkerInfoHealthyPath(getApplicationAttempt(), getSuperstep());
     List<String> finishedHostnameIdList = new ArrayList<>();
+    List<String> tmpFinishedHostnameIdList;
     long nextInfoMillis = System.currentTimeMillis();
     final int defaultTaskTimeoutMsec = 10 * 60 * 1000;  // from TaskTracker
     final int waitBetweenLogInfoMsec = 30 * 1000;
@@ -1293,7 +1310,7 @@ public class BspServiceMaster<I extends WritableComparable,
     while (true) {
       if (! logInfoOnlyRun) {
         try {
-          finishedHostnameIdList =
+          tmpFinishedHostnameIdList =
               getZkExt().getChildrenExt(finishedWorkerPath,
                                         true,
                                         false,
@@ -1308,14 +1325,16 @@ public class BspServiceMaster<I extends WritableComparable,
                   "children of " + finishedWorkerPath, e);
         }
         if (LOG.isDebugEnabled()) {
-          LOG.debug("barrierOnWorkerList: Got finished worker list = " +
-                        finishedHostnameIdList + ", size = " +
-                        finishedHostnameIdList.size() +
-                        ", worker list = " +
-                        workerInfoList + ", size = " +
-                        workerInfoList.size() +
+          // Log the names of the new workers that have finished since last time
+          Set<String> newFinishedHostnames = Sets.difference(
+            Sets.newHashSet(tmpFinishedHostnameIdList),
+            Sets.newHashSet(finishedHostnameIdList));
+          LOG.debug("barrierOnWorkerList: Got new finished worker list = " +
+                        newFinishedHostnames + ", size = " +
+                        newFinishedHostnames.size() +
                         " from " + finishedWorkerPath);
         }
+        finishedHostnameIdList = tmpFinishedHostnameIdList;
       }
 
       if (LOG.isInfoEnabled() &&
@@ -1728,7 +1747,7 @@ public class BspServiceMaster<I extends WritableComparable,
     if (checkpointFrequency == 0) {
       return CheckpointStatus.NONE;
     }
-    long firstCheckpoint = INPUT_SUPERSTEP + 1 + checkpointFrequency;
+    long firstCheckpoint = INPUT_SUPERSTEP + 1;
     if (getRestartedSuperstep() != UNSET_SUPERSTEP) {
       firstCheckpoint = getRestartedSuperstep() + checkpointFrequency;
     }
@@ -1832,7 +1851,9 @@ public class BspServiceMaster<I extends WritableComparable,
         return;
       }
 
-      getCleanedUpChildrenChangedEvent().waitForever();
+      getCleanedUpChildrenChangedEvent().waitForTimeoutOrFail(
+          GiraphConstants.WAIT_FOR_OTHER_WORKERS_TIMEOUT_MSEC.get(
+              getConfiguration()));
       getCleanedUpChildrenChangedEvent().reset();
     }
 
@@ -1898,7 +1919,7 @@ public class BspServiceMaster<I extends WritableComparable,
     // for workers and masters, the master will clean up the ZooKeeper
     // znodes associated with this job.
     String masterCleanedUpPath = cleanedUpPath  + "/" +
-        getTaskPartition() + MASTER_SUFFIX;
+        getTaskId() + MASTER_SUFFIX;
     try {
       String finalFinishedPath =
           getZkExt().createExt(masterCleanedUpPath,

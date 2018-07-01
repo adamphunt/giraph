@@ -22,8 +22,12 @@ import org.apache.giraph.conf.DefaultImmutableClassesGiraphConfigurable;
 import org.apache.giraph.conf.GiraphConstants;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
 import org.apache.giraph.master.MasterObserver;
+import org.apache.giraph.metrics.AggregatedMetrics;
+import org.apache.giraph.partition.PartitionStats;
 import org.apache.giraph.worker.WorkerObserver;
 import org.apache.log4j.Logger;
+
+import java.util.List;
 
 /**
  * An observer for both worker and master that periodically checks if available
@@ -89,26 +93,19 @@ public class ReactiveJMapHistoDumper extends
   public void startSupervisorThread() {
     stop = false;
     final Runtime runtime = Runtime.getRuntime();
-    thread = new Thread(new Runnable() {
+    thread = ThreadUtils.startThread(new Runnable() {
       @Override
       public void run() {
-        try {
-          while (!stop) {
-            long potentialMemory = (runtime.maxMemory() -
-                runtime.totalMemory()) + runtime.freeMemory();
-            if (potentialMemory / MB < minFreeMemory) {
-              JMap.heapHistogramDump(linesToPrint);
-            }
-            Thread.sleep(sleepMillis);
+        while (!stop) {
+          long potentialMemory = (runtime.maxMemory() -
+              runtime.totalMemory()) + runtime.freeMemory();
+          if (potentialMemory / MB < minFreeMemory) {
+            JMap.heapHistogramDump(linesToPrint);
           }
-        } catch (InterruptedException e) {
-          LOG.warn("JMap histogram sleep interrupted", e);
+          ThreadUtils.trySleep(sleepMillis);
         }
       }
-    });
-    thread.setName("ReactiveJMapHistoDumperSupervisorThread");
-    thread.setDaemon(true);
-    thread.start();
+    }, "ReactiveJMapHistoDumperSupervisorThread");
   }
 
   @Override
@@ -116,6 +113,11 @@ public class ReactiveJMapHistoDumper extends
 
   @Override
   public void postSuperstep(long superstep) { }
+
+  @Override
+  public void superstepMetricsUpdate(long superstep,
+      AggregatedMetrics aggregatedMetrics,
+      List<PartitionStats> partitionStatsList) { }
 
   @Override
   public void applicationFailed(Exception e) { }

@@ -31,9 +31,10 @@ import com.google.common.base.Preconditions;
 import java.io.IOException;
 
 /**
- * The {@link Computation} class for using Jython with Giraph. This class
- * implements the Giraph necessary interfaces but it actually holds a reference
- * to the {@link JythonComputation} which does the real work.
+ * The {@link org.apache.giraph.graph.Computation} class for using
+ * Jython with Giraph. This class implements the Giraph necessary
+ * interfaces but it actually holds a reference to the
+ * {@link JythonComputation} which does the real work.
  *
  * The two classes are linked and together they allow us to coerce Jython types
  * to Writables.

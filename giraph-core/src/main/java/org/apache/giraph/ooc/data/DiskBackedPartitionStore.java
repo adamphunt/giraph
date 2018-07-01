@@ -244,6 +244,12 @@ public class DiskBackedPartitionStore<I extends WritableComparable,
     I id = conf.createVertexId();
     id.readFields(in);
     Vertex<I, V, E> v = partition.getVertex(id);
+    if (v == null) {
+      throw new IllegalStateException("Vertex with ID " + id +
+        " not found in partition " + partition.getId() +
+        " which has " + partition.getVertexCount() + " vertices and " +
+        partition.getEdgeCount() + " edges.");
+    }
     OutEdges<I, E> edges = (OutEdges<I, E>) v.getEdges();
     edges.readFields(in);
     partition.saveVertex(v);
@@ -365,6 +371,8 @@ public class DiskBackedPartitionStore<I extends WritableComparable,
           partitionStore.getPartitionEdgeCount(partitionId));
       Partition<I, V, E> partition =
           partitionStore.removePartition(partitionId);
+      LOG.debug(
+          "Offloading partition " + partition + " DataIndex[" + index + "]");
       index.addIndex(DataIndex.TypeIndexEntry.PARTITION_VERTICES);
       OutOfCoreDataAccessor.DataOutputWrapper outputWrapper =
           dataAccessor.prepareOutput(ioThreadId, index.copy(), false);

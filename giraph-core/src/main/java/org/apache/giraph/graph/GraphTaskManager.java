@@ -58,6 +58,7 @@ import org.apache.giraph.partition.PartitionStats;
 import org.apache.giraph.partition.PartitionStore;
 import org.apache.giraph.scripting.ScriptLoader;
 import org.apache.giraph.utils.CallableFactory;
+import org.apache.giraph.utils.GcObserver;
 import org.apache.giraph.utils.MemoryUtils;
 import org.apache.giraph.utils.ProgressableUtils;
 import org.apache.giraph.worker.BspServiceWorker;
@@ -65,6 +66,7 @@ import org.apache.giraph.worker.InputSplitsCallable;
 import org.apache.giraph.worker.WorkerContext;
 import org.apache.giraph.worker.WorkerObserver;
 import org.apache.giraph.worker.WorkerProgress;
+import org.apache.giraph.writable.kryo.KryoWritableWrapper;
 import org.apache.giraph.zk.ZooKeeperManager;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
@@ -224,8 +226,10 @@ end[PURE_YARN]*/
     context.setStatus("setup: Beginning worker setup.");
     Configuration hadoopConf = context.getConfiguration();
     conf = new ImmutableClassesGiraphConfiguration<I, V, E>(hadoopConf);
-    setupMapperObservers();
     initializeJobProgressTracker();
+    // Setting the default handler for uncaught exceptions.
+    Thread.setDefaultUncaughtExceptionHandler(createUncaughtExceptionHandler());
+    setupMapperObservers();
     // Write user's graph types (I,V,E,M) back to configuration parameters so
     // that they are set for quicker access later. These types are often
     // inferred from the Computation class used.
@@ -258,6 +262,9 @@ end[PURE_YARN]*/
     context
         .setStatus("setup: Connected to Zookeeper service " + serverPortList);
     this.graphFunctions = determineGraphFunctions(conf, zkManager);
+    if (zkManager != null && this.graphFunctions.isMaster()) {
+      zkManager.cleanupOnExit();
+    }
     try {
       instantiateBspService();
     } catch (IOException e) {
@@ -623,6 +630,8 @@ end[PURE_YARN]*/
       }
       serviceMaster = new BspServiceMaster<I, V, E>(context, this);
       masterThread = new MasterThread<I, V, E>(serviceMaster, context);
+      masterThread.setUncaughtExceptionHandler(
+          createUncaughtExceptionHandler());
       masterThread.start();
     }
     if (graphFunctions.isWorker()) {
@@ -642,6 +651,7 @@ end[PURE_YARN]*/
    * notifies an out-of-core engine (if any is used) about the GC.
    */
   private void installGCMonitoring() {
+    final GcObserver[] gcObservers = conf.createGcObservers(context);
     List<GarbageCollectorMXBean> mxBeans = ManagementFactory
         .getGarbageCollectorMXBeans();
     final OutOfCoreEngine oocEngine =
@@ -665,6 +675,10 @@ end[PURE_YARN]*/
                   info.getGcInfo().getDuration() + "ms");
             }
             gcTimeMetric.inc(info.getGcInfo().getDuration());
+            GiraphMetrics.get().getGcTracker().gcOccurred(info.getGcInfo());
+            for (GcObserver gcObserver : gcObservers) {
+              gcObserver.gcOccurred(info);
+            }
             if (oocEngine != null) {
               oocEngine.gcCompleted(info);
             }
@@ -930,7 +944,7 @@ end[PURE_YARN]*/
    * Setup mapper observers
    */
   public void setupMapperObservers() {
-    mapperObservers = conf.createMapperObservers();
+    mapperObservers = conf.createMapperObservers(context);
     for (MapperObserver mapperObserver : mapperObservers) {
       mapperObserver.setup();
     }
@@ -1107,8 +1121,9 @@ end[PURE_YARN]*/
         LOG.fatal(
             "uncaughtException: OverrideExceptionHandler on thread " +
                 t.getName() + ", msg = " +  e.getMessage() + ", exiting...", e);
-        jobProgressTracker.logError(ExceptionUtils.getStackTrace(e));
-
+        byte [] exByteArray = KryoWritableWrapper.convertToByteArray(e);
+        jobProgressTracker.logError(ExceptionUtils.getStackTrace(e),
+                exByteArray);
         zooKeeperCleanup();
         workerFailureCleanup();
       } finally {

@@ -21,8 +21,12 @@ package org.apache.giraph.utils;
 import org.apache.giraph.conf.GiraphConstants;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
 import org.apache.giraph.master.MasterObserver;
+import org.apache.giraph.metrics.AggregatedMetrics;
+import org.apache.giraph.partition.PartitionStats;
 import org.apache.giraph.worker.WorkerObserver;
 import org.apache.log4j.Logger;
+
+import java.util.List;
 
 /**
  * An observer for both worker and master that periodically dumps the memory
@@ -82,21 +86,15 @@ public class JMapHistoDumper implements MasterObserver, WorkerObserver {
    */
   public void startJMapThread() {
     stop = false;
-    thread = new Thread(new Runnable() {
+    thread = ThreadUtils.startThread(new Runnable() {
       @Override
       public void run() {
         while (!stop) {
           JMap.heapHistogramDump(linesToPrint, liveObjectsOnly);
-          try {
-            Thread.sleep(sleepMillis);
-          } catch (InterruptedException e) {
-            LOG.info("JMap histogram sleep interrupted", e);
-          }
+          ThreadUtils.trySleep(sleepMillis);
         }
       }
-    });
-    thread.setDaemon(true);
-    thread.start();
+    }, "jmap-dumper");
   }
 
   @Override
@@ -104,6 +102,11 @@ public class JMapHistoDumper implements MasterObserver, WorkerObserver {
 
   @Override
   public void postSuperstep(long superstep) { }
+
+  @Override
+  public void superstepMetricsUpdate(long superstep,
+      AggregatedMetrics aggregatedMetrics,
+      List<PartitionStats> partitionStatsList) { }
 
   @Override
   public void applicationFailed(Exception e) { }

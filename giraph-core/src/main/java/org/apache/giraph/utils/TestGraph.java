@@ -18,23 +18,26 @@
 
 package org.apache.giraph.utils;
 
-import java.util.HashMap;
+import java.util.Collection;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map.Entry;
 
 import org.apache.giraph.conf.GiraphConfiguration;
+import org.apache.giraph.conf.GiraphConstants;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
+import org.apache.giraph.edge.CreateSourceVertexCallback;
 import org.apache.giraph.edge.Edge;
 import org.apache.giraph.edge.EdgeFactory;
 import org.apache.giraph.graph.Vertex;
 import org.apache.giraph.graph.VertexValueCombiner;
+import org.apache.giraph.types.ops.collections.Basic2ObjectMap;
+import org.apache.giraph.types.ops.collections.BasicCollectionsUtils;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableComparable;
 
 import com.google.common.base.Objects;
 import com.google.common.collect.Lists;
-import com.google.common.collect.Maps;
 
 /**
  * TestGraph class for in-memory testing.
@@ -50,9 +53,11 @@ public class TestGraph<I extends WritableComparable,
   /** Vertex value combiner */
   protected final VertexValueCombiner<V> vertexValueCombiner;
   /** The vertex values */
-  protected HashMap<I, Vertex<I, V, E>> vertices = Maps.newHashMap();
+  protected Basic2ObjectMap<I, Vertex<I, V, E>> vertices;
   /** The configuration */
   protected ImmutableClassesGiraphConfiguration<I, V, E> conf;
+  /** Callback that makes a decision on whether vertex should be created */
+  private CreateSourceVertexCallback<I> createSourceVertexCallback;
 
   /**
    * Constructor requiring classes
@@ -60,12 +65,22 @@ public class TestGraph<I extends WritableComparable,
    * @param conf Should have vertex and edge classes set.
    */
   public TestGraph(GiraphConfiguration conf) {
-    this.conf = new ImmutableClassesGiraphConfiguration(conf);
+    this.conf = new ImmutableClassesGiraphConfiguration<>(conf);
+    createSourceVertexCallback =
+        GiraphConstants.CREATE_EDGE_SOURCE_VERTICES_CALLBACK
+            .newInstance(this.conf);
     vertexValueCombiner = this.conf.createVertexValueCombiner();
+    vertices = BasicCollectionsUtils.create2ObjectMap(
+      this.conf.getVertexIdClass()
+    );
   }
 
-  public HashMap<I, Vertex<I, V, E>> getVertices() {
-    return vertices;
+  public Collection<Vertex<I, V, E>> getVertices() {
+    return vertices.values();
+  }
+
+  public int getVertexCount() {
+    return vertices.size();
   }
 
   public ImmutableClassesGiraphConfiguration<I, V, E> getConf() {
@@ -108,7 +123,7 @@ public class TestGraph<I extends WritableComparable,
    * @return this
    */
   public TestGraph<I, V, E> addVertex(I id, V value,
-                                         Entry<I, E>... edges) {
+                                      Entry<I, E>... edges) {
     addVertex(makeVertex(id, value, edges));
     return this;
   }
@@ -139,21 +154,13 @@ public class TestGraph<I extends WritableComparable,
 
   /**
    * Add an edge to an existing vertex
-   *
+   *`
    * @param vertexId Edge origin
    * @param edgePair The edge
    * @return this
    */
   public TestGraph<I, V, E> addEdge(I vertexId, Entry<I, E> edgePair) {
-    if (!vertices.containsKey(vertexId)) {
-      Vertex<I, V, E> v = conf.createVertex();
-      v.initialize(vertexId, conf.createVertexValue());
-      vertices.put(vertexId, v);
-    }
-    vertices.get(vertexId)
-      .addEdge(EdgeFactory.create(edgePair.getKey(),
-                                               edgePair.getValue()));
-    return this;
+    return addEdge(vertexId, edgePair.getKey(), edgePair.getValue());
   }
 
   /**
@@ -166,21 +173,17 @@ public class TestGraph<I extends WritableComparable,
    */
   public TestGraph<I, V, E> addEdge(I vertexId, I toVertex, E edgeValue) {
     if (!vertices.containsKey(vertexId)) {
-      Vertex<I, V, E> v = conf.createVertex();
-      v.initialize(vertexId, conf.createVertexValue());
-      vertices.put(vertexId, v);
+      if (createSourceVertexCallback.shouldCreateSourceVertex(vertexId)) {
+        Vertex<I, V, E> v = conf.createVertex();
+        v.initialize(vertexId, conf.createVertexValue());
+        vertices.put(vertexId, v);
+      }
     }
-    vertices.get(vertexId)
-      .addEdge(EdgeFactory.create(toVertex, edgeValue));
+    Vertex<I, V, E> v = vertices.get(vertexId);
+    if (v != null) {
+      v.addEdge(EdgeFactory.create(toVertex, edgeValue));
+    }
     return this;
-  }
-  /**
-   * An iterator over the ids
-   *
-   * @return the iterator
-   */
-  public Iterator<I> idIterator() {
-    return vertices.keySet().iterator();
   }
 
   /**
@@ -190,7 +193,7 @@ public class TestGraph<I extends WritableComparable,
    */
   @Override
   public Iterator<Vertex<I, V, E>> iterator() {
-    return vertices.values().iterator();
+    return vertices.valueIterator();
   }
 
   /**

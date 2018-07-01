@@ -17,12 +17,15 @@
  */
 package org.apache.giraph.block_app.framework.api.local;
 
+import static com.google.common.base.Preconditions.checkState;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
+import java.util.Queue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 
@@ -35,7 +38,9 @@ import org.apache.giraph.block_app.framework.api.BlockWorkerReceiveApi;
 import org.apache.giraph.block_app.framework.api.BlockWorkerSendApi;
 import org.apache.giraph.block_app.framework.api.BlockWorkerValueAccessor;
 import org.apache.giraph.block_app.framework.api.Counter;
-import org.apache.giraph.block_app.framework.api.local.InternalMessageStore.InternalConcurrentMessageStore;
+import org.apache.giraph.block_app.framework.api.local.InternalMessageStore.InternalChecksMessageStore;
+import org.apache.giraph.block_app.framework.api.local.InternalMessageStore.InternalWrappedMessageStore;
+import org.apache.giraph.block_app.framework.internal.BlockCounters;
 import org.apache.giraph.block_app.framework.internal.BlockWorkerContextLogic;
 import org.apache.giraph.block_app.framework.internal.BlockWorkerPieces;
 import org.apache.giraph.block_app.framework.output.BlockOutputDesc;
@@ -44,8 +49,10 @@ import org.apache.giraph.block_app.framework.output.BlockOutputWriter;
 import org.apache.giraph.block_app.framework.piece.global_comm.BroadcastHandle;
 import org.apache.giraph.block_app.framework.piece.global_comm.internal.ReducersForPieceHandler.BroadcastHandleImpl;
 import org.apache.giraph.comm.SendMessageCache.TargetVertexIdIterator;
+import org.apache.giraph.comm.messages.PartitionSplitInfo;
 import org.apache.giraph.conf.GiraphConstants;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
+import org.apache.giraph.conf.MessageClasses;
 import org.apache.giraph.edge.Edge;
 import org.apache.giraph.edge.OutEdges;
 import org.apache.giraph.graph.Vertex;
@@ -63,6 +70,9 @@ import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableComparable;
 
 import com.google.common.base.Preconditions;
+
+import it.unimi.dsi.fastutil.ints.IntArrayList;
+import it.unimi.dsi.fastutil.ints.IntList;
 
 /**
  * Internal implementation of Block API interfaces - representing an in-memory
@@ -89,6 +99,9 @@ class InternalApi<I extends WritableComparable, V extends Writable,
 
   private InternalMessageStore previousMessages;
   private InternalMessageStore nextMessages;
+
+  private MessageClasses previousMessageClasses;
+  private MessageClasses nextMessageClasses;
 
   private final InternalWorkerApi workerApi;
   private final BlockWorkerContextLogic workerContextLogic;
@@ -234,6 +247,19 @@ class InternalApi<I extends WritableComparable, V extends Writable,
     public <OW extends BlockOutputWriter> OW getWriter(String confOption) {
       return workerContextLogic.getOutputHandle().getWriter(confOption);
     }
+
+    @Override
+    public void setStatus(String status) {
+    }
+
+    @Override
+    public void progress() {
+    }
+
+    @Override
+    public Counter getCounter(final String group, final String name) {
+      return BlockCounters.getNoOpCounter();
+    }
   }
 
   @Override
@@ -307,14 +333,7 @@ class InternalApi<I extends WritableComparable, V extends Writable,
 
   @Override
   public Counter getCounter(final String group, final String name) {
-    return new Counter() {
-      @Override
-      public void increment(long incr) {
-      }
-      @Override
-      public void setValue(long value) {
-      }
-    };
+    return BlockCounters.getNoOpCounter();
   }
 
   private VertexMutations<I, V, E> getMutationFor(I vertexId) {
@@ -330,6 +349,17 @@ class InternalApi<I extends WritableComparable, V extends Writable,
   public Iterable takeMessages(I id) {
     if (previousMessages != null) {
       Iterable result = previousMessages.takeMessages(id);
+      if (result != null) {
+        return result;
+      }
+    }
+    return Collections.emptyList();
+  }
+
+  public Iterable<I> getPartitionDestinationVertices(int partitionId) {
+    if (previousMessages != null) {
+      Iterable result =
+          previousMessages.getPartitionDestinationVertices(partitionId);
       if (result != null) {
         return result;
       }
@@ -369,23 +399,26 @@ class InternalApi<I extends WritableComparable, V extends Writable,
     afterMasterBeforeWorker();
 
     previousMessages = nextMessages;
+    previousMessageClasses = nextMessageClasses;
     previousWorkerMessages = nextWorkerMessages;
 
-    nextMessages = InternalConcurrentMessageStore.createMessageStore(
-        conf, computation, runAllChecks);
+    nextMessageClasses = computation.getOutgoingMessageClasses(conf);
+    nextMessages = createMessageStore(
+      conf,
+      nextMessageClasses,
+      createPartitionInfo(),
+      runAllChecks
+    );
     nextWorkerMessages = new ArrayList<>();
 
-    // process mutations:
-    Set<I> targets = previousMessages == null ?
-      Collections.EMPTY_SET : previousMessages.targetsSet();
-    if (createVertexOnMsgs) {
-      for (I target : targets) {
-        if (getPartition(target).getVertex(target) == null) {
-          mutations.putIfAbsent(target, new VertexMutations<I, V, E>());
-        }
-      }
+    // finalize previous messages
+    if (previousMessages != null) {
+      previousMessages.finalizeStore();
     }
 
+    boolean ignoreExistingVertices = ignoreExistingVertices();
+
+    // process mutations:
     VertexResolver<I, V, E> vertexResolver = conf.createVertexResolver();
     for (Map.Entry<I, VertexMutations<I, V, E>> entry : mutations.entrySet()) {
       I vertexIndex = entry.getKey();
@@ -393,17 +426,118 @@ class InternalApi<I extends WritableComparable, V extends Writable,
           getPartition(vertexIndex).getVertex(vertexIndex);
       VertexMutations<I, V, E> curMutations = entry.getValue();
       Vertex<I, V, E> vertex = vertexResolver.resolve(
-          vertexIndex, originalVertex, curMutations,
-          targets.contains(vertexIndex));
+        vertexIndex,
+        originalVertex,
+        curMutations,
+        !ignoreExistingVertices && previousMessages != null &&
+        previousMessages.hasMessage(vertexIndex)
+      );
 
       if (vertex != null) {
         getPartition(vertex.getId()).putVertex(vertex);
       } else if (originalVertex != null) {
         getPartition(originalVertex.getId()).removeVertex(
             originalVertex.getId());
+        if (!ignoreExistingVertices && previousMessages != null) {
+          previousMessages.takeMessages(originalVertex.getId());
+        }
       }
     }
     mutations.clear();
+
+    if (!ignoreExistingVertices && createVertexOnMsgs &&
+        previousMessages != null) {
+      Iterator<I> iter = previousMessages.targetVertexIds();
+      while (iter.hasNext()) {
+        I target = iter.next();
+        if (getPartition(target).getVertex(target) == null) {
+          // need a copy as the key might be reusable
+          I copyId = WritableUtils.createCopy(target);
+
+          Vertex<I, V, E> vertex =
+              vertexResolver.resolve(copyId, null, null, true);
+
+          if (vertex != null) {
+            getPartition(vertex.getId()).putVertex(vertex);
+          }
+        }
+      }
+    }
+  }
+
+  public boolean ignoreExistingVertices() {
+    return previousMessageClasses != null &&
+        previousMessageClasses.ignoreExistingVertices();
+  }
+
+  private <M extends Writable>
+  InternalMessageStore<I, M> createMessageStore(
+    ImmutableClassesGiraphConfiguration<I, ?, ?> conf,
+    MessageClasses<I, M> messageClasses,
+    PartitionSplitInfo<I> partitionInfo,
+    boolean runAllChecks
+  ) {
+    InternalMessageStore<I, M> messageStore =
+      InternalWrappedMessageStore.create(conf, messageClasses, partitionInfo);
+    if (runAllChecks) {
+      return new InternalChecksMessageStore<I, M>(
+          messageStore, conf, messageClasses.createMessageValueFactory(conf));
+    } else {
+      return messageStore;
+    }
+  }
+
+  private PartitionSplitInfo<I> createPartitionInfo() {
+    return new PartitionSplitInfo<I>() {
+      /** Ids of partitions */
+      private IntList partitionIds;
+      /** Queue of partitions to be precessed in a superstep */
+      private Queue<Partition<I, V, E>> partitionQueue;
+
+      @Override
+      public int getPartitionId(I vertexId) {
+        return partitionerFactory.getPartition(vertexId, partitions.size(), 1);
+      }
+
+      @Override
+      public Iterable<Integer> getPartitionIds() {
+        if (partitionIds == null) {
+          partitionIds = new IntArrayList(partitions.size());
+          for (int i = 0; i < partitions.size(); i++) {
+            partitionIds.add(i);
+          }
+        }
+        Preconditions.checkState(partitionIds.size() == partitions.size());
+        return partitionIds;
+      }
+
+      @Override
+      public long getPartitionVertexCount(Integer partitionId) {
+        return partitions.get(partitionId).getVertexCount();
+      }
+
+      @Override
+      public void startIteration() {
+        checkState(partitionQueue == null || partitionQueue.isEmpty(),
+          "startIteration: It seems that some of " +
+          "of the partitions from previous iteration over partition store are" +
+          " not yet processed.");
+
+        partitionQueue = new LinkedList<Partition<I, V, E>>();
+        for (Partition<I, V, E> partition : partitions) {
+          partitionQueue.add(partition);
+        }
+      }
+
+      @Override
+      public Partition getNextPartition() {
+        return partitionQueue.poll();
+      }
+
+      @Override
+      public void putPartition(Partition partition) {
+      }
+    };
   }
 
   public List<Partition<I, V, E>> getPartitions() {
