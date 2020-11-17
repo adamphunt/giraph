@@ -21,6 +21,8 @@ package org.apache.giraph.job;
 import org.apache.giraph.conf.GiraphConfiguration;
 import org.apache.giraph.conf.GiraphConstants;
 import org.apache.giraph.conf.IntConfOption;
+import org.apache.giraph.counters.CustomCounter;
+import org.apache.giraph.counters.GiraphCountersThriftStruct;
 import org.apache.giraph.master.MasterProgress;
 import org.apache.giraph.utils.ThreadUtils;
 import org.apache.giraph.worker.WorkerProgress;
@@ -28,6 +30,8 @@ import org.apache.hadoop.mapreduce.Job;
 import org.apache.log4j.Logger;
 
 import java.io.IOException;
+import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
@@ -93,7 +97,7 @@ public class DefaultJobProgressTrackerService
             MAX_ALLOWED_TIME_WITHOUT_PROGRESS_MS.get(conf);
         CombinedWorkerProgress lastProgress = null;
         while (!finished) {
-          if (mappersStarted == conf.getMaxWorkers() + 1 &&
+          if (mappersStarted == conf.getMaxMappers() &&
               !workerProgresses.isEmpty()) {
             // Combine and log
             CombinedWorkerProgress combinedWorkerProgress =
@@ -202,7 +206,7 @@ public class DefaultJobProgressTrackerService
   public synchronized void mapperStarted() {
     mappersStarted++;
     if (LOG.isInfoEnabled()) {
-      if (mappersStarted == conf.getMaxWorkers() + 1) {
+      if (mappersStarted == conf.getMaxMappers()) {
         LOG.info("Got all " + mappersStarted + " mappers");
         jobGotAllMappers();
       } else {
@@ -210,7 +214,7 @@ public class DefaultJobProgressTrackerService
             UPDATE_MILLISECONDS) {
           lastTimeMappersStartedLogged = System.currentTimeMillis();
           LOG.info("Got " + mappersStarted + " but needs " +
-              (conf.getMaxWorkers() + 1) + " mappers");
+              conf.getMaxMappers() + " mappers");
         }
       }
     }
@@ -247,6 +251,18 @@ public class DefaultJobProgressTrackerService
   }
 
   @Override
+  public void sendMasterCounters(GiraphCountersThriftStruct giraphCounters) {
+    if (LOG.isInfoEnabled()) {
+      List<CustomCounter> counterList = giraphCounters.getCounters();
+      Collections.sort(counterList);
+      for (CustomCounter customCounter : counterList) {
+        LOG.info(String.format("%s: %s: %d%n", customCounter.getGroupName(),
+              customCounter.getCounterName(), customCounter.getValue()));
+      }
+    }
+  }
+
+  @Override
   public void stop(boolean succeeded) {
     finished = true;
     writerThread.interrupt();
@@ -270,7 +286,7 @@ public class DefaultJobProgressTrackerService
     }
 
     JobProgressTrackerService jobProgressTrackerService =
-        GiraphConstants.JOB_PROGRESS_TRACKER_CLASS.newInstance(conf);
+        GiraphConstants.JOB_PROGRESS_TRACKER_SERVICE_CLASS.newInstance(conf);
     jobProgressTrackerService.init(conf, jobObserver);
     return jobProgressTrackerService;
   }

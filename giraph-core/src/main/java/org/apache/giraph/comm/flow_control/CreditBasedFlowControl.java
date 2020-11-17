@@ -45,7 +45,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
@@ -295,8 +294,7 @@ public class CreditBasedFlowControl implements FlowControl {
       perWorkerUnsentRequestMap.putIfAbsent(
           destTaskId, new ArrayDeque<WritableRequest>());
       resumeRequestsId.putIfAbsent(
-          destTaskId, Sets.newSetFromMap(
-                  new ConcurrentHashMap<Long, Boolean>()));
+          destTaskId, Sets.<Long>newConcurrentHashSet());
       if (temp != null) {
         pair = temp;
       }

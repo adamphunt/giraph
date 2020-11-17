@@ -16,26 +16,37 @@
  * limitations under the License.
  */
 
-package org.apache.giraph.graph;
+package org.apache.giraph.counters;
 
-import org.apache.giraph.conf.GiraphConfiguration;
-import org.apache.giraph.job.JobProgressTracker;
+import com.facebook.swift.codec.ThriftField;
+import com.facebook.swift.codec.ThriftStruct;
 
-import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
- * Wrapper around JobProgressTracker which retries to connect and swallows
- * exceptions so app wouldn't crash if something goes wrong with progress
- * reports.
+ * Stores the information about the counter names and values
  */
-public interface JobProgressTrackerClient extends JobProgressTracker {
-  /** Close the connections if any */
-  void cleanup() throws IOException;
+@ThriftStruct
+public final class GiraphCountersThriftStruct {
+
+  /** Map of counter names and values */
+  private List<CustomCounter> counters = new ArrayList<>();
 
   /**
-   * Initialize the client.
-   * @param conf Job configuration
-   * @throws Exception
+   * Public constructor for thrift to create us.
+   * Please use GiraphCountersThriftStruct.get() to get the static instance.
    */
-  void init(GiraphConfiguration conf) throws Exception;
+  public GiraphCountersThriftStruct() {
+  }
+
+  @ThriftField(1)
+  public List<CustomCounter> getCounters() {
+    return counters;
+  }
+
+  @ThriftField
+  public void setCounters(List<CustomCounter> counters) {
+    this.counters = counters;
+  }
 }

@@ -51,10 +51,11 @@ public class BlockOutputHandle implements BlockOutputApi {
       Progressable hadoopProgressable) {
     outputDescMap = BlockOutputFormat.createInitAndCheckOutputDescsMap(
         conf, jobIdentifier);
-    for (String confOption : outputDescMap.keySet()) {
-      freeWriters.put(confOption,
+    for (Map.Entry<String, BlockOutputDesc> entry : outputDescMap.entrySet()) {
+      entry.getValue().preWriting();
+      freeWriters.put(entry.getKey(),
           new ConcurrentLinkedQueue<BlockOutputWriter>());
-      occupiedWriters.put(confOption,
+      occupiedWriters.put(entry.getKey(),
           new ConcurrentLinkedQueue<BlockOutputWriter>());
     }
     initialize(conf, hadoopProgressable);
@@ -127,5 +128,9 @@ public class BlockOutputHandle implements BlockOutputApi {
     ProgressableUtils.getResultsWithNCallables(callableFactory,
         Math.min(GiraphConstants.NUM_OUTPUT_THREADS.get(conf),
             allWriters.size()), "close-writers-%d", progressable);
+    // Close all output formats
+    for (BlockOutputDesc outputDesc : outputDescMap.values()) {
+      outputDesc.postWriting();
+    }
   }
 }

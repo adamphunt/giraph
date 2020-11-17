@@ -15,6 +15,20 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+<<<<<<< HEAD:giraph-block-app-8/src/main/java/org/apache/giraph/function/primitive/comparators/BooleanComparatorFunction.java
+package org.apache.giraph.function.primitive.comparators;
+
+import it.unimi.dsi.fastutil.booleans.BooleanComparator;
+
+import java.io.Serializable;
+
+/** A type-specific comparator, that can be specified with a Lambda */
+public interface BooleanComparatorFunction
+    extends BooleanComparator, Serializable {
+  @Override
+  default int compare(Boolean ok1, Boolean ok2) {
+   return compare(ok1.booleanValue(), ok2.booleanValue());
+=======
 package org.apache.giraph.compiling;
 
 /**
@@ -35,5 +49,6 @@ public class ObjectInitializerConfOption<T>
   @Override
   protected String createFullCodeSnippet(String codeSnippet) {
     return "return new " + getInterfaceName() + "(){{" + codeSnippet + "}};";
+>>>>>>> release-1.3:giraph-block-app-8/src/main/java/org/apache/giraph/compiling/ObjectInitializerConfOption.java
   }
 }
