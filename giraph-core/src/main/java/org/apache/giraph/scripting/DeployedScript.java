@@ -17,7 +17,7 @@
  */
 package org.apache.giraph.scripting;
 
-import com.google.common.base.MoreObjects;
+import com.google.common.base.Objects;
 import org.apache.giraph.graph.Language;
 import org.codehaus.jackson.annotate.JsonCreator;
 import org.codehaus.jackson.annotate.JsonProperty;
@@ -88,7 +88,7 @@ public class DeployedScript {
 
   @Override
   public String toString() {
-    return MoreObjects.toStringHelper(this)
+    return Objects.toStringHelper(this)
         .add("path", path)
         .add("deployType", deployType)
         .add("language", language)

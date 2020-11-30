@@ -17,7 +17,7 @@
  */
 package org.apache.giraph.jython;
 
-import com.google.common.base.MoreObjects;
+import com.google.common.base.Objects;
 import org.apache.giraph.combiner.MessageCombiner;
 
 import com.google.common.collect.Lists;
@@ -60,7 +60,7 @@ public class JythonJob {
     }
 
     @Override public String toString() {
-      return MoreObjects.toStringHelper(this)
+      return Objects.toStringHelper(this)
           .add("table", table)
           .add("partition_filter", partition_filter)
           .toString();
@@ -93,7 +93,7 @@ public class JythonJob {
     }
 
     @Override public String toString() {
-      return MoreObjects.toStringHelper(this)
+      return Objects.toStringHelper(this)
           .add("table", getTable())
           .add("partition_filter", getPartition_filter())
           .add("id_column", id_column)
@@ -138,7 +138,7 @@ public class JythonJob {
     }
 
     @Override public String toString() {
-      return MoreObjects.toStringHelper(this)
+      return Objects.toStringHelper(this)
           .add("table", getTable())
           .add("partition_filter", getPartition_filter())
           .add("source_id_column", source_id_column)
@@ -190,7 +190,7 @@ public class JythonJob {
     }
 
     @Override public String toString() {
-      return MoreObjects.toStringHelper(this)
+      return Objects.toStringHelper(this)
           .add("table", table)
           .add("partition", partition)
           .add("id_column", id_column)

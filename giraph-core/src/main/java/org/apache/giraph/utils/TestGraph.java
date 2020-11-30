@@ -23,7 +23,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map.Entry;
 
-import com.google.common.base.MoreObjects;
+import com.google.common.base.Objects;
 import org.apache.giraph.conf.GiraphConfiguration;
 import org.apache.giraph.conf.GiraphConstants;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
@@ -238,7 +238,7 @@ public class TestGraph<I extends WritableComparable,
 
   @Override
   public String toString() {
-    return MoreObjects.toStringHelper(this).add(
+    return Objects.toStringHelper(this).add(
       "vertices", vertices).toString();
   }
 }
